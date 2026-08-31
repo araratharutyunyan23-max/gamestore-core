@@ -6,13 +6,18 @@ namespace Tests\Feature\Reconciliation;
 
 use App\Domain\Delivery\Actions\DeliverOrder;
 use App\Domain\Delivery\Actions\SweepStuckOrders;
+use App\Domain\Delivery\DTO\DeliveryOutcome;
 use App\Domain\Ordering\Enums\OrderStatus;
+use App\Domain\Ordering\StateMachine\OrderStateMachine;
+use App\Domain\Ordering\StateMachine\TransitionResult;
 use App\Domain\Payments\Actions\ApplyPaymentEvent;
 use App\Jobs\DeliverOrderJob;
 use App\Models\Order;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\Test;
@@ -50,6 +55,53 @@ final class SweepStuckOrdersTest extends TestCase
         self::assertSame(1, app(SweepStuckOrders::class)->execute());
 
         Queue::assertPushed(DeliverOrderJob::class, 1);
+    }
+
+    #[Test]
+    public function it_picks_up_an_order_whose_delivery_already_failed(): void
+    {
+        // Пробел в покрытии, найденный сверкой с ТЗ: все фикстуры доводки
+        // были в статусе paid, то есть проверялся только заказ, выдача
+        // которого НЕ НАЧИНАЛАСЬ. А в задании путь другой —
+        // delivery_failed → повтор → delivered, и именно он оставался
+        // непроверенным, хотя ради него подметальщик и написан.
+        $this->stuckOrderIn(OrderStatus::DeliveryFailed);
+
+        self::assertSame(1, app(SweepStuckOrders::class)->execute());
+
+        Queue::assertPushed(DeliverOrderJob::class, 1);
+    }
+
+    #[Test]
+    public function it_picks_up_an_order_waiting_for_restock(): void
+    {
+        // Ожидание пополнения — тоже работа подметальщика: склад пополнили,
+        // а заказ сам об этом не узнает.
+        $this->stuckOrderIn(OrderStatus::OutOfStock);
+
+        self::assertSame(1, app(SweepStuckOrders::class)->execute());
+        Queue::assertPushed(DeliverOrderJob::class, 1);
+    }
+
+    #[Test]
+    public function a_failed_order_that_finally_gets_its_code_is_reported_as_recovered(): void
+    {
+        // Полный путь из ТЗ: delivery_failed → повтор → delivered.
+        // Проверяется не только исход, но и след в логе: без отдельного
+        // события «восстановлен» неотличим от «выдан с первого раза», и
+        // посчитать, сколько заказов система вытащила сама, невозможно.
+        $order = $this->stuckOrderIn(OrderStatus::DeliveryFailed);
+
+        $events = [];
+        Log::listen(static function (MessageLogged $event) use (&$events): void {
+            $events[] = $event->message;
+        });
+
+        self::assertSame(DeliveryOutcome::Delivered, app(DeliverOrder::class)->execute($order->public_id));
+        self::assertSame(OrderStatus::Delivered, $order->refresh()->status);
+
+        self::assertContains('order_recovered', $events);
+        self::assertSame(1, DB::table('deliveries')->where('order_id', $order->id)->count());
     }
 
     #[Test]
@@ -132,6 +184,39 @@ final class SweepStuckOrdersTest extends TestCase
             1,
             DB::table('ledger_transactions')->where('order_id', $order->id)->where('kind', 'order_delivered')->count(),
         );
+    }
+
+    /**
+     * Заказ, застрявший в тупике, из которого система обязана выбраться сама.
+     */
+    private function stuckOrderIn(OrderStatus $status): Order
+    {
+        $order = $this->paidOrderAgedBy(60);
+        $machine = app(OrderStateMachine::class);
+
+        // Переходы делаются в прошлом вместе с оплатой: подметальщик отбирает
+        // работу по ВОЗРАСТУ статуса, и заказ, только что провалившийся,
+        // трогать рано — его повтор уже стоит в очереди.
+        $this->travel(-60)->minutes();
+
+        // Через delivering, а не напрямую: машина состояний не пускает
+        // paid -> delivery_failed, и это правильно — провалиться можно
+        // только у того, что начиналось. Фикстура обязана ходить теми же
+        // переходами, что и боевой путь, иначе она проверяет несуществующее
+        // состояние.
+        self::assertSame(
+            TransitionResult::Applied,
+            $machine->tryTransition($order, OrderStatus::Delivering, reason: 'fixture'),
+        );
+
+        self::assertSame(
+            TransitionResult::Applied,
+            $machine->tryTransition($order->refresh(), $status, reason: 'fixture'),
+        );
+
+        $this->travelBack();
+
+        return $order->refresh();
     }
 
     private function paidOrderAgedBy(int $minutes, string $sku = 'KEY-CS2-PRIME'): Order

@@ -128,6 +128,17 @@ final readonly class ApplyPaymentEvent
 
         if (! $this->paymentStates->project($order->id, $event, $projected)) {
             // Событие старше уже применённого: отбрасываем, не трогая деньги.
+            // В лог это попадает обязательно: устаревшие вебхуки — нормальная
+            // работа сети, но их внезапный рост означает, что платёжная
+            // система переигрывает очередь, и знать об этом надо раньше,
+            // чем по расхождению в сверке.
+            StructuredLog::webhook(
+                'webhook_stale',
+                $event->event_id,
+                $event->order_public_id,
+                reason: $projected->value,
+            );
+
             $this->events->markProcessed($event, PaymentEventState::Stale);
 
             return PaymentEventState::Stale;

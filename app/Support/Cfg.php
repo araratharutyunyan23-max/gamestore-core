@@ -29,6 +29,12 @@ final class Cfg
         return config()->integer('delivery.stuck_after_minutes');
     }
 
+    /** Насколько старой может быть последняя сверка, прежде чем /health краснеет. */
+    public static function reconciliationMaxAgeSeconds(): int
+    {
+        return config()->integer('ops.reconciliation_max_age_seconds');
+    }
+
     /** Возраст неприменённого события, после которого его переставляет доводка. */
     public static function drainAfterSeconds(): int
     {

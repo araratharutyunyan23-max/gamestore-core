@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace App\Domain\Reconciliation\Actions;
 
 use App\Domain\Ledger\Repositories\LedgerRepository;
+use App\Domain\Ops\Repositories\OpsRepository;
 use App\Domain\Reconciliation\DTO\Anomaly;
 use App\Domain\Reconciliation\DTO\ReconciliationReport;
+use App\Domain\Reconciliation\Enums\FindingSeverity;
 use App\Domain\Reconciliation\Repositories\AnomalyQueryRepository;
 use App\Domain\Reconciliation\Repositories\ReconciliationFindingRepository;
 use App\Support\Cfg;
+use App\Support\StructuredLog;
 
 /**
  * Сверка: два вопроса задания — «оплачен, но не выдан» и «выдан, но не оплачен» —
@@ -24,6 +27,7 @@ final readonly class RunReconciliation
         private AnomalyQueryRepository $anomalies,
         private ReconciliationFindingRepository $findings,
         private LedgerRepository $ledger,
+        private OpsRepository $ops,
     ) {}
 
     /**
@@ -55,7 +59,16 @@ final readonly class RunReconciliation
 
         foreach ($anomalies as $anomaly) {
             $this->findings->record($anomaly->kind, null, $anomaly->subject, $anomaly->details);
+            StructuredLog::finding($anomaly->kind->value, $anomaly->severity()->value, $anomaly->subject);
         }
+
+        // Прогон фиксируется всегда, в том числе пустой: именно пустые
+        // прогоны доказывают, что сверка жива, а данные здоровы.
+        $this->ops->recordReconciliationRun(
+            $full,
+            count($anomalies),
+            count(array_filter($anomalies, static fn (Anomaly $a): bool => $a->severity() === FindingSeverity::Critical)),
+        );
 
         return new ReconciliationReport(
             anomalies: $anomalies,

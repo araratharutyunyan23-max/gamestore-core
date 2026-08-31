@@ -10,7 +10,7 @@ final class UnparsableAmount extends DomainException
 {
     public static function float(float $value): self
     {
-        return new self("Amount arrived as float ({$value}); money must never be a float");
+        return new self("Amount {$value} is not exactly representable in kopecks");
     }
 
     public static function value(mixed $value): self

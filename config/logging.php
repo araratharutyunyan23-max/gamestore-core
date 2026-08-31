@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Monolog\Formatter\JsonFormatter;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
@@ -58,6 +59,20 @@ return [
             'driver' => 'stack',
             'channels' => explode(',', (string) env('LOG_STACK', 'single')),
             'ignore_exceptions' => false,
+        ],
+
+        /*
+         * Канал по умолчанию для этого проекта. Задание требует
+         * СТРУКТУРИРОВАННЫХ логов по платежам и выдаче — значит машиночитаемых.
+         * Текстовая строка с JSON на хвосте структурированной не является:
+         * по ней нельзя отфильтровать по полю, не написав парсер.
+         */
+        'json' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/laravel.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'formatter' => JsonFormatter::class,
+            'replace_placeholders' => true,
         ],
 
         'single' => [

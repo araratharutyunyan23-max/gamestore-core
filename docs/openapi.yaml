@@ -1,0 +1,497 @@
+openapi: 3.1.0
+
+info:
+  title: gamestore-core API
+  version: "1.0.0"
+  description: |
+    Ядро магазина цифровых товаров: заказы по SKU, платёжные вебхуки,
+    автоматическая выдача кодов, сверка.
+
+    ## Что важно знать перед интеграцией
+
+    **Выдача асинхронна.** `POST /orders` возвращает заказ в статусе `created`,
+    а код появляется позже. Клиент опрашивает `GET /orders/{id}` до финального
+    статуса. Синхронной выдачи нет намеренно: она связала бы время ответа
+    с доступностью внешнего поставщика.
+
+    **Вебхук оплаты почти всегда отвечает `200`.** Для платёжной системы любой
+    другой код означает неудачную доставку и повторную отправку события.
+    Поэтому даже неразобранное тело принимается и сохраняется, а разбирается
+    уже фоновой задачей.
+
+    **Повторы безопасны.** Создание заказа идемпотентно по заголовку
+    `Idempotency-Key`, приём события — по `event_id`, а признание оплаты —
+    по заказу. Пятьдесят одновременных вебхуков по одному заказу приводят
+    ровно к одной выдаче.
+
+servers:
+  - url: http://localhost:8000
+    description: Локальная разработка (make up)
+
+tags:
+  - name: Каталог
+    description: Витрина остатков
+  - name: Заказы
+    description: Создание и получение заказа
+  - name: Платежи
+    description: Приём вебхуков платёжной системы
+  - name: Эксплуатация
+    description: Сверка денежного пути
+
+paths:
+  /api/v1/products:
+    get:
+      tags: [Каталог]
+      summary: Витрина остатков
+      description: |
+        Курсорная пагинация. Страница стоит ровно два запроса к базе при любом
+        объёме каталога, поэтому глубокая страница не дороже первой.
+
+        У товаров от поставщика поле `available` равно `null`: локального
+        остатка у них нет, доступность выясняется в момент выдачи. Показывать
+        там число означало бы придумать его.
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [topup, key, subscription, giftcard]
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 25 }
+        - name: cursor
+          in: query
+          required: false
+          description: Значение `next_cursor` из предыдущего ответа. Битый курсор даёт первую страницу, а не ошибку.
+          schema: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: Страница витрины
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ShowcaseItem" }
+                  next_cursor:
+                    type: [string, "null"]
+                    description: null означает, что это последняя страница
+              example:
+                data:
+                  - sku: KEY-CS2-PRIME
+                    name: CS2 Prime Status ключ
+                    price_minor: 129000
+                    currency: RUB
+                    available: 12
+                  - sku: STEAM-TOPUP-500
+                    name: Пополнение Steam 500 ₽
+                    price_minor: 50000
+                    currency: RUB
+                    available: null
+                next_cursor: "129000:4"
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/v1/orders:
+    post:
+      tags: [Заказы]
+      summary: Создать заказ по SKU
+      description: |
+        Заголовок `Idempotency-Key` обязателен. Сгенерировать его на сервере
+        нельзя: серверный ключ уникален на каждый запрос, то есть повтор создал
+        бы второй заказ — ровно то, от чего заголовок и защищает.
+
+        Повторный запрос с тем же ключом возвращает **тот же** заказ,
+        а не создаёт новый.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Уникальный ключ операции со стороны клиента.
+          schema: { type: string, maxLength: 128 }
+          example: order-2026-08-31-0001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sku]
+              properties:
+                sku:
+                  type: string
+                  maxLength: 64
+                  example: KEY-CS2-PRIME
+      responses:
+        "201":
+          description: Заказ создан или возвращён повторно по тому же ключу
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Order" }
+        "422":
+          description: |
+            Нет заголовка `Idempotency-Key`, он длиннее 128 символов,
+            не передан `sku` или SKU недоступен к покупке.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationErrorBody"
+                  - $ref: "#/components/schemas/DomainErrorBody"
+              examples:
+                sku_not_purchasable:
+                  value:
+                    error: sku_not_purchasable
+                    message: SKU NO-SUCH-SKU is unknown or not available for purchase
+
+  /api/v1/orders/{publicId}:
+    get:
+      tags: [Заказы]
+      summary: Получить заказ
+      description: |
+        Форма ответа совпадает с ответом на создание. Поле `delivery` равно
+        `null`, пока код не выдан; после выдачи содержит код.
+      parameters:
+        - name: publicId
+          in: path
+          required: true
+          schema: { type: string, pattern: "^ord_\\d{5}$" }
+          example: ord_00001
+      responses:
+        "200":
+          description: Заказ
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Order" }
+        "404": { description: Заказ не найден }
+
+  /api/v1/webhooks/payment:
+    post:
+      tags: [Платежи]
+      summary: Вебхук платёжной системы
+      description: |
+        Эндпоинт делает ровно одну короткую вставку в инбокс и отвечает `200`.
+        Вся денежная логика выполняется фоновой задачей.
+
+        **Гарантии, которые эндпоинт обязан переживать** (из контракта
+        платёжной системы): доставка at-least-once, события могут приходить
+        не по порядку, событие может прийти раньше самого заказа.
+
+        Повтор с тем же `event_id` ничего не меняет. Пятьдесят одновременных
+        событий по одному заказу приводят ровно к одной выдаче — даже если
+        у всех разные `event_id`.
+
+        Подпись не проверяется: по условию задания это упрощено.
+        Троттлинга нет намеренно — `429` для платёжной системы такой же признак
+        неудачной доставки, как `500`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PaymentWebhook" }
+            example:
+              event_id: evt_a1b2c3
+              order_id: ord_00123
+              status: paid
+              amount: 500
+              currency: RUB
+              created_at: "2026-01-01T12:00:00Z"
+      responses:
+        "200":
+          description: |
+            Событие принято. Отвечается и на неразобранное тело: `5xx` заставил
+            бы платёжную систему повторять вечно то, что мы всё равно
+            не разберём.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: accepted }
+
+  /ops/reconciliation:
+    get:
+      tags: [Эксплуатация]
+      summary: Отчёт сверки
+      description: |
+        Отвечает на два вопроса: «оплачен, но не выдан» и «выдан, но не оплачен».
+        Плюс шесть других расхождений, которые могут разъехаться незаметно.
+
+        Возвращает `409`, если найдены критичные расхождения, — так эндпоинт
+        можно повесить прямо в мониторинг без разбора тела ответа.
+
+        Ожидание пополнения склада — предупреждение, а не инцидент: заказ
+        в `out_of_stock` это пауза, и считать её нездоровьем значит красить
+        систему в красное ровно тогда, когда она работает штатно.
+      security:
+        - opsToken: []
+      parameters:
+        - name: full
+          in: query
+          required: false
+          description: |
+            Полные проверки по всей истории (дисбаланс журнала, дрейф остатка,
+            дубли кодов). Ежеминутно не нужны, гоняются ночью.
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Расхождений нет
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReconciliationReport" }
+        "409":
+          description: Есть критичные расхождения
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReconciliationReport" }
+        "403": { description: Нет или неверен заголовок X-Ops-Token }
+
+  /health:
+    get:
+      tags: [Эксплуатация]
+      summary: Живость сервиса
+      description: |
+        Проверяет базу, кеш и **возраст последней сверки**.
+
+        Третья проверка здесь не для полноты. Остановившийся шедулер не роняет
+        торговлю: заказы идут, ответы двухсотые, расхождения тихо копятся —
+        и снаружи это выглядит как совершенно здоровая система. Возраст
+        сверки — единственный признак, по которому такое состояние видно.
+
+        Токена не требует: живость опрашивает балансировщик, а закрытый
+        `/health` — это `/health`, который никто не читает. Секретов в ответе нет.
+      responses:
+        "200":
+          description: Все проверки зелёные
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthReport" }
+        "503":
+          description: Хотя бы одна проверка красная
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthReport" }
+
+  /metrics:
+    get:
+      tags: [Эксплуатация]
+      summary: Метрики в текстовом формате Prometheus
+      description: |
+        Плоский текстовый экспортер без отдельной библиотеки. Значения берутся
+        из уже посчитанных состояний (статусы заказов, состояния инбокса,
+        исходы обращений к поставщикам, открытые находки), поэтому опрос стоит
+        несколько группировок и не зависит от объёма истории.
+
+        Закрыт тем же эксплуатационным токеном, что и сверка: по счётчикам
+        заказов и незакрытой предоплаты читается оборот.
+
+        Ключевая метрика — `gamestore_ledger_imbalance_minor`. У неё есть
+        единственное правильное значение, ноль; всё остальное в экспорте —
+        наблюдение, а это инвариант.
+      security:
+        - opsToken: []
+      responses:
+        "200":
+          description: Экспорт метрик
+          content:
+            text/plain:
+              schema: { type: string }
+              example: |
+                # HELP gamestore_orders Заказы по статусам
+                # TYPE gamestore_orders gauge
+                gamestore_orders{status="paid"} 12
+                gamestore_orders{status="delivered"} 340
+                # HELP gamestore_ledger_imbalance_minor Расхождение двойной записи в копейках
+                # TYPE gamestore_ledger_imbalance_minor gauge
+                gamestore_ledger_imbalance_minor 0
+        "403": { description: Нет или неверен заголовок X-Ops-Token }
+
+components:
+  securitySchemes:
+    opsToken:
+      type: apiKey
+      in: header
+      name: X-Ops-Token
+      description: Значение переменной окружения OPS_TOKEN.
+
+  responses:
+    ValidationError:
+      description: Ошибка валидации
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ValidationErrorBody" }
+
+  schemas:
+    HealthReport:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        checks:
+          type: object
+          properties:
+            database: { type: string, enum: [ok, down] }
+            cache: { type: string, enum: [ok, down] }
+            reconciliation:
+              type: object
+              properties:
+                status: { type: string, enum: [ok, stale] }
+                age_seconds:
+                  type: integer
+                  nullable: true
+                  description: null — сверка не запускалась ни разу
+                max_age_seconds: { type: integer }
+
+    ShowcaseItem:
+      type: object
+      required: [sku, name, price_minor, currency, available]
+      properties:
+        sku: { type: string, example: KEY-CS2-PRIME }
+        name: { type: string, example: CS2 Prime Status ключ }
+        price_minor:
+          type: integer
+          description: Цена в копейках. Деньги в системе только целые — float в денежном пути невозможен по типу.
+          example: 129000
+        currency: { type: string, example: RUB }
+        available:
+          type: [integer, "null"]
+          description: Остаток. `null` у товаров от поставщика — локального остатка у них нет.
+          example: 12
+
+    Order:
+      type: object
+      required: [id, status, sku, amount_minor, currency, created_at]
+      properties:
+        id:
+          type: string
+          description: Внешний идентификатор. Внутренние идентификаторы наружу не отдаются.
+          example: ord_00001
+        status: { $ref: "#/components/schemas/OrderStatus" }
+        sku: { type: string, example: KEY-CS2-PRIME }
+        product_name: { type: string, example: CS2 Prime Status ключ }
+        amount_minor: { type: integer, example: 129000 }
+        currency: { type: string, example: RUB }
+        payment_state:
+          type: [string, "null"]
+          enum: [paid, failed, null]
+          description: |
+            Состояние оплаты отдельно от статуса заказа. Поздняя отмена платежа
+            обязана стать правдой о деньгах, но не отменяет уже выданный код.
+        delivery:
+          type: [object, "null"]
+          description: null, пока код не выдан
+          properties:
+            code: { type: string, example: LFXC-TNCS-BPCD }
+            delivered_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
+    OrderStatus:
+      type: string
+      enum:
+        - created
+        - paid
+        - delivering
+        - delivered
+        - payment_failed
+        - out_of_stock
+        - delivery_failed
+        - cancelled
+      description: |
+        Основной путь: `created → paid → delivering → delivered`.
+
+        Финальные (необратимы, подкреплено триггером базы): `delivered`,
+        `payment_failed`, `cancelled`.
+
+        Восстановимые: `out_of_stock` (ждёт пополнения склада),
+        `delivery_failed` (оба поставщика доказанно не выдали код).
+        Из обоих выдача продолжается без задвоения.
+
+        `cancelled` добавлен сверх списка задания: без него отзыв платежа
+        по ещё не выданному заказу некуда записать, и фоновая доводка потом
+        выдаёт товар клиенту, которому уже вернули деньги.
+
+    PaymentWebhook:
+      type: object
+      required: [event_id, order_id, status, amount, currency, created_at]
+      properties:
+        event_id:
+          type: string
+          description: Уникален для события. Повтор приходит с тем же значением.
+          example: evt_a1b2c3
+        order_id: { type: string, example: ord_00123 }
+        status:
+          type: string
+          enum: [paid, failed]
+        amount:
+          type: [integer, string]
+          description: |
+            Сумма в мажорных единицах (рублях), как в примере задания.
+            `float` отвергается явно: деньги во float недопустимы.
+          example: 500
+        currency: { type: string, example: RUB }
+        created_at:
+          type: string
+          format: date-time
+          description: |
+            Время события у платёжной системы. Именно оно, а не порядок
+            доставки, определяет, какое событие новее.
+
+    ReconciliationReport:
+      type: object
+      required: [healthy, summary, anomalies]
+      properties:
+        healthy:
+          type: boolean
+          description: Считается только по критичным расхождениям.
+        summary:
+          type: object
+          properties:
+            critical: { type: integer }
+            warning: { type: integer }
+            ledger_imbalance_minor:
+              type: integer
+              description: |
+                Суммарный дисбаланс журнала. Ноль — необходимое условие
+                здоровья, но не достаточное: две ошибочные проводки в разные
+                стороны тоже дают ноль. Поэтому есть отдельный детектор
+                по каждой денежной транзакции.
+            open_prepayment_minor:
+              type: integer
+              description: Деньги за оплаченные, но не выданные заказы.
+            by_kind:
+              type: object
+              additionalProperties: { type: integer }
+        anomalies:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string, example: paid_not_delivered }
+              severity: { type: string, enum: [critical, warning] }
+              subject: { type: string, example: ord_00001 }
+              details: { type: object }
+
+    ValidationErrorBody:
+      type: object
+      properties:
+        message: { type: string }
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+    DomainErrorBody:
+      type: object
+      properties:
+        error: { type: string, example: sku_not_purchasable }
+        message: { type: string }

@@ -116,11 +116,36 @@ final class PaymentWebhookTest extends TestCase
     }
 
     #[Test]
-    public function an_amount_sent_as_a_float_is_treated_as_malformed(): void
+    public function an_amount_with_a_decimal_point_is_a_normal_amount(): void
     {
+        // Регрессия. Разбор отвергал ЛЮБОЙ float, и {"amount": 1290.00} —
+        // совершенно законное тело от платёжной системы — уезжало в malformed.
+        // Событие при этом валидно целиком: заказ есть, статус paid, деньги
+        // те же. То есть терялся реальный оплаченный заказ, и терялся молча.
+        //
+        // В JSON нет типа «десятичное». Сумма с точкой — не признак ошибки.
+        $order = $this->makeOrder();
+        $major = $order->amount_minor / 100;
+
+        $this->postJson('/api/v1/webhooks/payment', [
+            ...$this->webhookPayload($order),
+            'amount' => $major,
+        ])->assertOk();
+
+        $event = PaymentEvent::query()->firstOrFail();
+
+        self::assertNotSame(PaymentEventState::Malformed, $event->process_state);
+        self::assertSame($order->amount_minor, $event->amount_minor);
+    }
+
+    #[Test]
+    public function an_amount_that_cannot_be_expressed_in_kopecks_is_malformed(): void
+    {
+        // А округлять чужие деньги на своё усмотрение мы по-прежнему не будем:
+        // 1290.005 нельзя честно перевести в копейки.
         $order = $this->makeOrder();
 
-        $this->postWebhook($this->webhookPayload($order, ['amount' => 1290.5]))->assertOk();
+        $this->postWebhook($this->webhookPayload($order, ['amount' => 1290.005]))->assertOk();
 
         $event = PaymentEvent::query()->firstOrFail();
 

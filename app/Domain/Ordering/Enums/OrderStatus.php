@@ -61,6 +61,23 @@ enum OrderStatus: string
         };
     }
 
+    /**
+     * Тупик, из которого система выбирается сама.
+     *
+     * Не «ошибка»: заказ оплачен, обязательство перед клиентом живо, и повтор
+     * выдачи — штатный путь, а не ручное вмешательство. Отличать эти статусы
+     * от paid нужно, чтобы в логах было видно долю самостоятельно доведённых
+     * заказов — это и есть мера того, работает ли восстановление вообще.
+     */
+    public function isRecoverableDeadEnd(): bool
+    {
+        return match ($this) {
+            self::OutOfStock, self::DeliveryFailed => true,
+            self::Created, self::Paid, self::Delivering,
+            self::Delivered, self::PaymentFailed, self::Cancelled => false,
+        };
+    }
+
     public function canTransitionTo(self $target): bool
     {
         if ($this === $target) {

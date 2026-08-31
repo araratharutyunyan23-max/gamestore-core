@@ -58,7 +58,13 @@ test: ## Весь набор тестов
 race: ## Только состязательные сценарии (критерии приёмки 1-6)
 	$(APP) php artisan test --testsuite=Race
 
+# Кеш результатов сбрасывается перед каждым прогоном намеренно. Larastan
+# поднимает приложение из bootstrapFiles, и при тёплом кеше после добавления
+# новых файлов анализ падает с «Undefined constant LARAVEL_VERSION» — то есть
+# инструмент качества сам становится ненадёжным. Четыре лишние секунды дешевле
+# команды, которая иногда врёт.
 stan: ## PHPStan level 9
+	$(APP) ./vendor/bin/phpstan clear-result-cache >/dev/null
 	$(APP) ./vendor/bin/phpstan analyse --memory-limit=1G --no-progress
 
 pint: ## Форматирование
@@ -66,6 +72,7 @@ pint: ## Форматирование
 
 qa: ## Полный гейт: стиль + статанализ + тесты (то же гоняет CI)
 	$(APP) ./vendor/bin/pint --test
+	$(APP) ./vendor/bin/phpstan clear-result-cache >/dev/null
 	$(APP) ./vendor/bin/phpstan analyse --memory-limit=1G --no-progress
 	$(APP) php artisan test
 

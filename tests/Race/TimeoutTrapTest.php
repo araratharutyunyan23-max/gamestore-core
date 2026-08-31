@@ -105,6 +105,86 @@ final class TimeoutTrapTest extends SupplierTestCase
     }
 
     #[Test]
+    public function a_5xx_from_the_first_supplier_still_reaches_the_second(): void
+    {
+        // ТЗ прямо говорит: «поставщик A иногда 5xx». Любой 5xx для нас —
+        // НЕИЗВЕСТНОСТЬ, а не отказ: 500 мог прилететь от прокси уже после
+        // того, как код закоммичен. Поэтому уход к B происходит не сразу,
+        // а через выяснение: probe -> печать -> и только тогда B.
+        //
+        // Пока заглушка не отпускала захват при ошибке, этот путь был
+        // заблокирован навсегда: probe вечно отвечал in_flight, печать
+        // отвергалась, заказ висел.
+        $this->stock(SupplierName::A, self::SKU, 5);
+        $this->stock(SupplierName::B, self::SKU, 5);
+        $this->behaviour(SupplierName::A, 'error', times: 3);
+
+        $order = $this->paidSupplierOrder();
+
+        self::assertSame(DeliveryOutcome::Delivered, app(DeliverOrder::class)->execute($order->public_id));
+
+        self::assertSame(0, $this->issuedCount(SupplierName::A, $order->public_id));
+        self::assertSame(1, $this->issuedCount(SupplierName::B, $order->public_id), 'Товар выдан не ровно один раз.');
+        $this->assertDeliveredOnce($order);
+
+        // Попытка к A закрыта печатью — доказано, что кода по ней не будет.
+        self::assertSame(
+            'sealed',
+            DB::table('delivery_attempts')->where('order_id', $order->id)->where('supplier', 'A')->value('outcome'),
+        );
+    }
+
+    #[Test]
+    public function when_both_suppliers_refuse_the_order_stays_recoverable(): void
+    {
+        // «B резервный, тоже может падать» — прямая цитата из ТЗ.
+        // Оба отказали: заказ обязан уйти в ВОССТАНОВИМЫЙ отказ, а не упасть
+        // и не остаться выданным наполовину.
+        $this->stock(SupplierName::A, self::SKU, 0);
+        $this->stock(SupplierName::B, self::SKU, 0);
+
+        $order = $this->paidSupplierOrder();
+
+        self::assertSame(DeliveryOutcome::DeliveryFailed, app(DeliverOrder::class)->execute($order->public_id));
+
+        self::assertSame(0, DB::table('deliveries')->where('order_id', $order->id)->count());
+        self::assertSame(0, $this->issuedCount(SupplierName::A, $order->public_id));
+        self::assertSame(0, $this->issuedCount(SupplierName::B, $order->public_id));
+
+        $order->refresh();
+        self::assertSame(OrderStatus::DeliveryFailed, $order->status);
+        self::assertTrue($order->status->isRecoverable(), 'Отказ обоих поставщиков обязан быть восстановимым.');
+    }
+
+    #[Test]
+    public function a_failed_delivery_recovers_after_the_supplier_comes_back(): void
+    {
+        // Путь из ТЗ: paid -> delivering -> delivery_failed -> повторная
+        // выдача -> delivered. Проверяется целиком, а не по кускам.
+        $this->stock(SupplierName::A, self::SKU, 0);
+        $this->stock(SupplierName::B, self::SKU, 0);
+
+        $order = $this->paidSupplierOrder();
+        app(DeliverOrder::class)->execute($order->public_id);
+        self::assertSame(OrderStatus::DeliveryFailed, $order->refresh()->status);
+
+        // Поставщик вернулся.
+        $this->stock(SupplierName::A, self::SKU, 5);
+
+        self::assertSame(DeliveryOutcome::Delivered, app(DeliverOrder::class)->execute($order->public_id));
+        self::assertSame(OrderStatus::Delivered, $order->refresh()->status);
+
+        // И ровно одна выдача, несмотря на четыре обращения к поставщикам.
+        self::assertSame(1, DB::table('deliveries')->where('order_id', $order->id)->count());
+        $this->assertDeliveredOnce($order);
+
+        // Эпоха выросла и СОХРАНИЛАСЬ: повторная выдача пошла с новым
+        // request_id. Пока она жила только в памяти, повтор упирался
+        // в delivery_attempts_request_uq и заказ было не довести.
+        self::assertGreaterThan(1, $order->refresh()->delivery_epoch);
+    }
+
+    #[Test]
     public function an_unresolved_timeout_never_moves_to_the_second_supplier(): void
     {
         // Поставщик молчит, кода не выдавал, но ДОКАЗАТЕЛЬСТВ этого у нас нет.
