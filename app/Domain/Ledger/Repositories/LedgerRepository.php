@@ -58,6 +58,41 @@ final readonly class LedgerRepository
     }
 
     /**
+     * Суммарный дисбаланс журнала. Ноль — необходимое условие здоровья,
+     * но не достаточное: две ошибочные проводки в разные стороны тоже дают
+     * ноль, поэтому есть отдельный детектор по каждой транзакции.
+     */
+    public function totalImbalanceMinor(): int
+    {
+        /** @var list<object{total: int|string|null}> $rows */
+        $rows = $this->db->select('SELECT COALESCE(SUM(amount_signed), 0)::bigint AS total FROM ledger_entries');
+
+        // Каст обязателен: SUM(bigint) в PostgreSQL возвращает numeric,
+        // а PDO отдаёт numeric строкой.
+        return (int) $rows[0]->total;
+    }
+
+    /**
+     * Деньги за оплаченные, но ещё не выданные заказы.
+     *
+     * Это независимый от статусов заказа способ увидеть ту же картину:
+     * остаток по обязательству перед клиентом обязан сходиться с суммой
+     * заказов, которые оплачены и не доставлены.
+     */
+    public function openPrepaymentMinor(): int
+    {
+        /** @var list<object{total: int|string|null}> $rows */
+        $rows = $this->db->select(<<<'SQL'
+            SELECT COALESCE(-SUM(e.amount_signed), 0)::bigint AS total
+              FROM ledger_entries e
+              JOIN ledger_accounts a ON a.id = e.account_id
+             WHERE a.code = 'customer_prepayment'
+        SQL);
+
+        return (int) $rows[0]->total;
+    }
+
+    /**
      * @return array<string, int>
      */
     private function accountIds(string $currency): array

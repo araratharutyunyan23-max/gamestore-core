@@ -60,6 +60,31 @@ final readonly class OrderRepository
     }
 
     /**
+     * Заказы, застрявшие в ожидании выдачи.
+     *
+     * Выборка идёт по частичному индексу orders_worklist_idx, который покрывает
+     * только невыполненные заказы и потому не растёт вместе с историей.
+     * Заказы под живой арендой исключаются: их прямо сейчас кто-то выдаёт.
+     *
+     * @return list<object{public_id: string, status: string}>
+     */
+    public function stuckAwaitingDelivery(int $olderThanMinutes, int $limit): array
+    {
+        /** @var list<object{public_id: string, status: string}> $rows */
+        $rows = $this->db->select(<<<'SQL'
+            SELECT public_id, status
+              FROM orders
+             WHERE status IN ('paid', 'delivering', 'out_of_stock', 'delivery_failed')
+               AND status_changed_at < now() - make_interval(mins => ?)
+               AND (lease_expires_at IS NULL OR lease_expires_at <= now())
+             ORDER BY next_action_at
+             LIMIT ?
+        SQL, [$olderThanMinutes, $limit]);
+
+        return $rows;
+    }
+
+    /**
      * Создать заказ. Нарушение orders_idempotency_key_uq означает, что
      * конкурент успел первым с тем же ключом, и это штатный исход повторной
      * отправки — обрабатывается вызывающим кодом.
