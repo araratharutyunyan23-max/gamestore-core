@@ -5,21 +5,22 @@ declare(strict_types=1);
 namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Http\Client\Pool;
+use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
-use RuntimeException;
 
 /**
  * Эмулятор платёжной системы.
  *
- * Тот же самый инструмент используется и для демонстрации, и для проверки
- * гонок — как и требует задание. Отправка идёт настоящим HTTP к работающему
- * приложению, а не вызовом сервиса: гонку, которой нет на уровне HTTP, нельзя
- * считать доказанной.
+ * Тот же инструмент используется и для демонстрации, и для проверки гонок —
+ * как требует задание. Отправка идёт настоящим HTTP к работающему приложению,
+ * а не вызовом сервиса: гонка, которой нет на уровне HTTP, не считается
+ * доказанной.
  *
- * Параллельность сделана через curl_multi, потому что расширения pcntl
- * в стандартном php:8.3-cli нет, а поднимать 50 процессов PHP ради 50
- * HTTP-запросов — это измерять скорость бутстрапа Laravel, а не поведение
- * системы под гонкой.
+ * Параллельность — через Http::pool. Под ним тот же curl_multi, но без
+ * ручного boilerplate: все запросы стартуют до того, как начинается ожидание
+ * ответов, поэтому они действительно уходят одновременно.
  */
 final class SendPaymentWebhookCommand extends Command
 {
@@ -38,38 +39,23 @@ final class SendPaymentWebhookCommand extends Command
     {
         $order = $this->stringArgument('order');
         $base = rtrim($this->stringOption('url') ?? config()->string('app.url'), '/');
-        $count = max(1, (int) $this->stringOption('count'));
+        $count = max(1, (int) ($this->stringOption('count') ?? '1'));
 
         $amount = $this->stringOption('amount');
         $amountValue = $amount !== null ? (int) $amount : $this->resolveAmount($base, $order);
 
-        $sharedEventId = 'evt_'.Str::lower((string) Str::ulid());
-
-        $payloads = [];
-
-        for ($i = 0; $i < $count; $i++) {
-            $payloads[] = json_encode([
-                'event_id' => $this->option('same-event-id') === true
-                    ? $sharedEventId
-                    : 'evt_'.Str::lower((string) Str::ulid()),
-                'order_id' => $order,
-                'status' => $this->stringOption('status') ?? 'paid',
-                'amount' => $amountValue,
-                'currency' => 'RUB',
-                'created_at' => now()->toIso8601String(),
-            ], JSON_THROW_ON_ERROR);
-        }
-
+        $payloads = $this->buildPayloads($order, $amountValue, $count);
         $url = $base.'/api/v1/webhooks/payment';
-        $codes = $this->option('parallel') === true
+
+        $statuses = $this->option('parallel') === true
             ? $this->sendParallel($url, $payloads)
             : $this->sendSequential($url, $payloads);
 
-        $summary = array_count_values($codes);
+        $summary = array_count_values($statuses);
         ksort($summary);
 
-        foreach ($summary as $code => $times) {
-            $this->line(sprintf('  HTTP %s × %d', $code, $times));
+        foreach ($summary as $status => $times) {
+            $this->line(sprintf('  HTTP %s × %d', $status, $times));
         }
 
         // Любой ответ, кроме 200, означал бы повторную доставку со стороны
@@ -78,109 +64,75 @@ final class SendPaymentWebhookCommand extends Command
     }
 
     /**
-     * @param  list<string>  $payloads
+     * @return list<array<string, mixed>>
+     */
+    private function buildPayloads(string $order, int $amount, int $count): array
+    {
+        $sharedEventId = $this->eventId();
+        $payloads = [];
+
+        for ($i = 0; $i < $count; $i++) {
+            $payloads[] = [
+                'event_id' => $this->option('same-event-id') === true ? $sharedEventId : $this->eventId(),
+                'order_id' => $order,
+                'status' => $this->stringOption('status') ?? 'paid',
+                'amount' => $amount,
+                'currency' => 'RUB',
+                'created_at' => now()->toIso8601String(),
+            ];
+        }
+
+        return $payloads;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $payloads
      * @return list<int>
      */
     private function sendSequential(string $url, array $payloads): array
     {
-        $codes = [];
-
-        foreach ($payloads as $payload) {
-            $handle = $this->makeHandle($url, $payload);
-            curl_exec($handle);
-            $codes[] = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
-            curl_close($handle);
-        }
-
-        return $codes;
+        return array_map(
+            static fn (array $payload): int => Http::acceptJson()->post($url, $payload)->status(),
+            $payloads,
+        );
     }
 
     /**
-     * @param  list<string>  $payloads
+     * @param  list<array<string, mixed>>  $payloads
      * @return list<int>
      */
     private function sendParallel(string $url, array $payloads): array
     {
-        $multi = curl_multi_init();
-        $handles = [];
+        /** @var array<int, Response> $responses */
+        $responses = Http::pool(static fn (Pool $pool): array => array_map(
+            static fn (array $payload) => $pool->acceptJson()->post($url, $payload),
+            $payloads,
+        ));
 
-        foreach ($payloads as $payload) {
-            $handle = $this->makeHandle($url, $payload);
-            curl_multi_add_handle($multi, $handle);
-            $handles[] = $handle;
-        }
-
-        do {
-            $status = curl_multi_exec($multi, $running);
-
-            if ($running > 0) {
-                curl_multi_select($multi, 1.0);
-            }
-        } while ($running > 0 && $status === CURLM_OK);
-
-        $codes = [];
-
-        foreach ($handles as $handle) {
-            $codes[] = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
-            curl_multi_remove_handle($multi, $handle);
-            curl_close($handle);
-        }
-
-        curl_multi_close($multi);
-
-        return $codes;
-    }
-
-    private function makeHandle(string $url, string $payload): \CurlHandle
-    {
-        $handle = curl_init($url);
-
-        if ($handle === false) {
-            throw new RuntimeException('Не удалось инициализировать curl');
-        }
-
-        curl_setopt_array($handle, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $payload,
-            CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'],
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 30,
-        ]);
-
-        return $handle;
+        return array_map(
+            static fn (Response $response): int => $response->status(),
+            array_values($responses),
+        );
     }
 
     private function resolveAmount(string $base, string $order): int
     {
-        $handle = curl_init($base.'/api/v1/orders/'.$order);
-
-        if ($handle === false) {
-            throw new RuntimeException('Не удалось инициализировать curl');
-        }
-
-        curl_setopt_array($handle, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => ['Accept: application/json'],
-            CURLOPT_TIMEOUT => 10,
-        ]);
-
-        $body = curl_exec($handle);
-        curl_close($handle);
-
-        if (! is_string($body)) {
-            throw new RuntimeException("Заказ {$order} недоступен по HTTP");
-        }
-
-        /** @var array{data?: array{amount_minor?: int}} $decoded */
-        $decoded = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
-        $minor = $decoded['data']['amount_minor'] ?? null;
+        $response = Http::acceptJson()->get($base.'/api/v1/orders/'.$order);
+        $minor = $response->json('data.amount_minor');
 
         if (! is_int($minor)) {
-            throw new RuntimeException("В ответе по заказу {$order} нет суммы");
+            $this->error("Не удалось получить сумму заказа {$order}: HTTP {$response->status()}");
+
+            return 0;
         }
 
-        // Контракт вебхука оперирует мажорными единицами (см. CLAUDE.md §10.2).
+        // Контракт вебхука оперирует мажорными единицами (CLAUDE.md §10.2).
         return intdiv($minor, 100);
+    }
+
+    private function eventId(): string
+    {
+        return 'evt_'.Str::lower((string) Str::ulid());
     }
 
     private function stringArgument(string $name): string

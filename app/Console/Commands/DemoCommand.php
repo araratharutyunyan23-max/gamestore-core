@@ -7,6 +7,7 @@ namespace App\Console\Commands;
 use App\Domain\Ordering\Repositories\OrderRepository;
 use App\Models\Order;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -60,39 +61,17 @@ final class DemoCommand extends Command
 
     private function createOrder(string $base, string $sku): string
     {
-        $handle = curl_init($base.'/api/v1/orders');
-
-        if ($handle === false) {
-            throw new RuntimeException('Не удалось инициализировать curl');
-        }
-
-        curl_setopt_array($handle, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode(['sku' => $sku], JSON_THROW_ON_ERROR),
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'Accept: application/json',
+        $response = Http::acceptJson()
+            ->withHeaders([
                 // Заголовок обязателен: без него API отвечает 422.
-                'Idempotency-Key: demo-'.Str::lower((string) Str::ulid()),
-            ],
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 15,
-        ]);
+                'Idempotency-Key' => 'demo-'.Str::lower((string) Str::ulid()),
+            ])
+            ->post($base.'/api/v1/orders', ['sku' => $sku]);
 
-        $body = curl_exec($handle);
-        $code = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
-        curl_close($handle);
+        $publicId = $response->json('data.id');
 
-        if ($code !== 201 || ! is_string($body)) {
-            throw new RuntimeException("Создание заказа вернуло HTTP {$code}");
-        }
-
-        /** @var array{data?: array{id?: string}} $decoded */
-        $decoded = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
-        $publicId = $decoded['data']['id'] ?? null;
-
-        if (! is_string($publicId)) {
-            throw new RuntimeException('В ответе на создание заказа нет идентификатора');
+        if (! $response->created() || ! is_string($publicId)) {
+            throw new RuntimeException("Создание заказа вернуло HTTP {$response->status()}");
         }
 
         return $publicId;
