@@ -24,3 +24,21 @@ Schedule::command('payments:drain-unapplied')
 Schedule::command('delivery:resolve-unknown')
     ->everyMinute()
     ->withoutOverlapping();
+
+/*
+| Подметальщик НЕ имеет собственной логики выдачи: он ставит ту же задачу,
+| что и обычный путь после оплаты. Отдельный путь восстановления расходится
+| с основным ровно в тех переходах, которые никто не догадался проверить,
+| и становится источником второй выдачи.
+*/
+Schedule::command('orders:sweep-stuck')
+    ->everyMinute()
+    ->withoutOverlapping();
+
+/*
+| Полная сверка — ночью: три её проверки идут по всей истории и ежеминутно
+| не нужны, расхождение такого рода не появляется за минуту.
+*/
+Schedule::command('shop:reconcile --full')
+    ->dailyAt('03:00')
+    ->withoutOverlapping();

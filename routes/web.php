@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Http\Controllers\ReconciliationController;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Route;
 
@@ -21,3 +22,11 @@ Route::get('/', static fn (): JsonResponse => response()->json([
         'reconciliation' => 'GET /ops/reconciliation',
     ],
 ]));
+
+/*
+| Эксплуатационный эндпоинт сверки. Живёт здесь, а не в routes/api.php,
+| потому что api-маршруты монтируются с префиксом /api, а это не часть
+| публичного контракта — это внутренний отчёт о состоянии денег.
+| Закрыт токеном в ReconciliationRequest::authorize().
+*/
+Route::get('/ops/reconciliation', ReconciliationController::class);
