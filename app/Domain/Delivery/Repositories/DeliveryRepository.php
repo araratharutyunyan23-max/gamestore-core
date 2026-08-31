@@ -6,9 +6,11 @@ namespace App\Domain\Delivery\Repositories;
 
 use App\Domain\Catalog\Enums\SupplyMode;
 use App\Domain\Delivery\DTO\ClaimedKey;
+use App\Domain\Delivery\Enums\SupplierName;
 use App\Models\Delivery;
 use App\Models\Order;
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\UniqueConstraintViolationException;
 
 final readonly class DeliveryRepository
 {
@@ -32,6 +34,35 @@ final readonly class DeliveryRepository
             'code_encrypted' => $key->encryptedCode,
             'code_hash' => $key->codeHash,
             'code_last4' => $key->codeLast4,
+            'created_at' => now(),
+        ]);
+
+        return $id;
+    }
+
+    /**
+     * Запись факта выдачи кодом от поставщика.
+     *
+     * @throws UniqueConstraintViolationException
+     */
+    public function recordFromSupplier(
+        Order $order,
+        SupplierName $supplier,
+        string $requestId,
+        string $encryptedCode,
+        string $codeHash,
+        string $codeLast4,
+    ): int {
+        /** @var int $id */
+        $id = $this->db->table('deliveries')->insertGetId([
+            'order_id' => $order->id,
+            'product_id' => $order->product_id,
+            'supply_mode' => SupplyMode::Supplier->value,
+            'supplier' => $supplier->value,
+            'request_id' => $requestId,
+            'code_encrypted' => $encryptedCode,
+            'code_hash' => $codeHash,
+            'code_last4' => $codeLast4,
             'created_at' => now(),
         ]);
 

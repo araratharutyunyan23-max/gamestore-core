@@ -23,8 +23,17 @@ enum DeliveryOutcome: string
     /** Оплата отозвана до начала выдачи — товар отдавать нельзя. */
     case PaymentNotConfirmed = 'payment_not_confirmed';
 
-    /** Товар от внешнего поставщика: сетевой путь появляется на шаге Ш4. */
-    case SupplierNotImplemented = 'supplier_not_implemented';
+    /** Поставщик доказанно не выдал код — можно пробовать следующего. */
+    case SupplierExhausted = 'supplier_exhausted';
+
+    /**
+     * Судьба обращения к поставщику неизвестна. НЕ отказ: код мог быть выдан,
+     * и уходить ко второму поставщику нельзя. Выясняется фоновым разрешением.
+     */
+    case AwaitingResolution = 'awaiting_resolution';
+
+    /** Оба поставщика доказанно не выдали код — восстановимый отказ. */
+    case DeliveryFailed = 'delivery_failed';
 
     case NotDeliverable = 'not_deliverable';
 }

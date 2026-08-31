@@ -179,14 +179,18 @@ final class PoolDeliveryTest extends TestCase
     }
 
     #[Test]
-    public function a_supplier_backed_product_is_not_delivered_from_the_pool(): void
+    public function a_supplier_backed_product_never_touches_the_key_pool(): void
     {
-        // У товара от поставщика нет локального пула: сетевой путь с ловушкой
-        // таймаута появляется на шаге Ш4, и до тех пор выдача не выполняется.
+        // У товара от поставщика нет локального пула. Поставщики в этом наборе
+        // не подняты, соединение не устанавливается — а это ДОКАЗАННОЕ
+        // отсутствие выдачи, поэтому оба поставщика честно перебираются
+        // и заказ уходит в восстановимый отказ, не тронув ни одного ключа.
         $order = $this->paidOrder('STEAM-TOPUP-500');
 
-        self::assertSame(DeliveryOutcome::SupplierNotImplemented, $this->deliver($order));
+        self::assertSame(DeliveryOutcome::DeliveryFailed, $this->deliver($order));
         self::assertSame(0, DB::table('deliveries')->count());
+        self::assertSame(0, DB::table('license_keys')->whereNotNull('delivery_id')->count());
+        self::assertTrue($order->refresh()->status->isRecoverable());
     }
 
     private function paidOrder(string $sku = 'KEY-CS2-PRIME'): Order

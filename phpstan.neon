@@ -37,12 +37,22 @@ parameters:
     noEnvCallsOutsideOfConfig: true
 
     exceptions:
-        implicitThrows: false
+        # true, а не false. При false PHPStan учитывает только задокументированные
+        # броски, а методы HTTP-клиента Laravel их не объявляют — и обработка
+        # сетевых сбоев объявляется мёртвым кодом, хотя в рантайме именно она
+        # отличает «запрос не ушёл» от «ответ не дошёл». Ошибочный анализ здесь
+        # опаснее отсутствия анализа: он подталкивает удалить нужный catch.
+        implicitThrows: true
         # Без этого catch (UniqueConstraintViolationException) считается мёртвым,
         # а он — центральная ветка "уже выдано" (CLAUDE.md §5.6)
         reportUncheckedExceptionDeadCatch: false
         check:
-            missingCheckedExceptionInThrows: true
+            # Выключено вместе с implicitThrows: true. Иначе каждый метод,
+            # вызывающий что-либо из фреймворка, обязан объявить @throws Throwable —
+            # аннотация без информации, которая обесценивает саму проверку.
+            missingCheckedExceptionInThrows: false
+            # А это оставлено: @throws, который на деле не бросается, — ложь
+            # в документации, и её PHPStan ловит.
             tooWideThrowType: true
         # Checked-исключения отслеживаем ради СВОИХ доменных ошибок (OutOfStock,
         # SupplierUnknown и т.п.) — они обязаны быть в @throws. Инфраструктурные
