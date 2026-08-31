@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Domain\Payments\Enums\PaymentProjectionState;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Support\Carbon;
 
 /**
  * Проекция состояния оплаты, отделённая от FSM выполнения заказа.
@@ -18,11 +18,11 @@ use Illuminate\Support\Carbon;
  *
  * @property int $order_id
  * @property PaymentProjectionState $state
- * @property Carbon $occurred_at
- * @property Carbon $received_at
+ * @property CarbonImmutable $occurred_at
+ * @property CarbonImmutable $received_at
  * @property int $event_row_id
  * @property string $last_event_id
- * @property Carbon $updated_at
+ * @property CarbonImmutable $updated_at
  * @property-read Order $order
  */
 final class OrderPaymentState extends Model

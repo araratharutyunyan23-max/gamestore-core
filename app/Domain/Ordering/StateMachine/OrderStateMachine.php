@@ -40,17 +40,23 @@ final readonly class OrderStateMachine
             return TransitionResult::IgnoredIllegal;
         }
 
+        $columns = $this->columnsFor($to);
+
         $affected = $this->db->table('orders')
             ->where('id', $order->id)
             ->where('status', $from->value)
-            ->update($this->columnsFor($to));
+            ->update($columns);
 
         if ($affected !== 1) {
             return TransitionResult::LostRace;
         }
 
         $this->recordTransition($order->id, $from, $to, $reason, $traceId);
-        $order->refresh();
+
+        // Состояние в памяти синхронизируется без запроса. refresh() перечитал бы
+        // заказ вместе со всеми связями — четыре запроса на каждый переход,
+        // а переходов у одного заказа три-четыре.
+        $order->forceFill($columns)->syncOriginal();
 
         return TransitionResult::Applied;
     }
@@ -90,7 +96,8 @@ final readonly class OrderStateMachine
             OrderStatus::Paid => $columns + ['paid_at' => now()],
             OrderStatus::Delivered => $columns + ['delivered_at' => now(), 'next_action_at' => now()],
             OrderStatus::PaymentFailed, OrderStatus::Cancelled => $columns + ['failed_at' => now()],
-            default => $columns,
+            OrderStatus::Created, OrderStatus::Delivering,
+            OrderStatus::OutOfStock, OrderStatus::DeliveryFailed => $columns,
         };
     }
 

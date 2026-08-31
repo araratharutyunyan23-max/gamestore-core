@@ -84,6 +84,19 @@ final class OrderApiTest extends TestCase
     }
 
     #[Test]
+    public function it_refuses_an_overlong_idempotency_key_with_422_not_500(): void
+    {
+        // Колонка idempotency_key — varchar(128). Без проверки длины запрос
+        // доходил бы до базы и падал там, превращая ошибку клиента в 500.
+        $this->withHeader('Idempotency-Key', str_repeat('k', 200))
+            ->postJson('/api/v1/orders', ['sku' => 'KEY-CS2-PRIME'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('Idempotency-Key');
+
+        self::assertSame(0, Order::query()->count());
+    }
+
+    #[Test]
     public function it_refuses_an_unknown_sku(): void
     {
         $this->withHeader('Idempotency-Key', 'key-unknown')

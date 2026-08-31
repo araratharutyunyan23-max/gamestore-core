@@ -6,9 +6,9 @@ namespace App\Models;
 
 use App\Domain\Catalog\Enums\SupplyMode;
 use App\Domain\Delivery\Enums\SupplierName;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Support\Carbon;
 
 /**
  * Факт выдачи. Ровно один на заказ — это держит deliveries_order_uq,
@@ -24,7 +24,7 @@ use Illuminate\Support\Carbon;
  * @property string $code_encrypted
  * @property string $code_hash
  * @property string $code_last4
- * @property Carbon $created_at
+ * @property CarbonImmutable $created_at
  * @property-read Order $order
  */
 final class Delivery extends Model

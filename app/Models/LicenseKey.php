@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Domain\Catalog\Enums\LicenseKeyStatus;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Support\Carbon;
 
 /**
  * Ключ из собственного пула.
@@ -25,11 +25,11 @@ use Illuminate\Support\Carbon;
  * @property string $code_last4
  * @property LicenseKeyStatus $status
  * @property int|null $delivery_id
- * @property Carbon|null $reserved_at
- * @property Carbon|null $reserved_until
- * @property Carbon|null $issued_at
- * @property Carbon $created_at
- * @property Carbon $updated_at
+ * @property CarbonImmutable|null $reserved_at
+ * @property CarbonImmutable|null $reserved_until
+ * @property CarbonImmutable|null $issued_at
+ * @property CarbonImmutable $created_at
+ * @property CarbonImmutable $updated_at
  * @property-read Product $product
  */
 final class LicenseKey extends Model

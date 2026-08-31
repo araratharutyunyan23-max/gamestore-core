@@ -43,9 +43,12 @@ enum OrderStatus: string
      */
     public function isRecoverable(): bool
     {
+        // Без default: при добавлении статуса PHPStan укажет на это место,
+        // а не позволит новому кейсу молча провалиться в «не восстановимо».
         return match ($this) {
             self::OutOfStock, self::DeliveryFailed => true,
-            default => false,
+            self::Created, self::Paid, self::Delivering,
+            self::Delivered, self::PaymentFailed, self::Cancelled => false,
         };
     }
 
@@ -54,7 +57,7 @@ enum OrderStatus: string
     {
         return match ($this) {
             self::Paid, self::Delivering, self::OutOfStock, self::DeliveryFailed => true,
-            default => false,
+            self::Created, self::Delivered, self::PaymentFailed, self::Cancelled => false,
         };
     }
 

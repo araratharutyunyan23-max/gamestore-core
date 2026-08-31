@@ -8,6 +8,7 @@ use App\Domain\Ordering\Repositories\OrderRepository;
 use App\Models\Order;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -25,6 +26,8 @@ final class DemoCommand extends Command
         {--url= : Базовый URL приложения}';
 
     protected $description = 'Сквозной сценарий: создать заказ, оплатить вебхуком, дождаться выдачи кода';
+
+    private const POLL_INTERVAL_MICROSECONDS = 250_000;
 
     public function handle(OrderRepository $orders): int
     {
@@ -86,7 +89,7 @@ final class DemoCommand extends Command
                 return $order;
             }
 
-            usleep(250_000);
+            Sleep::usleep(self::POLL_INTERVAL_MICROSECONDS);
         }
 
         return null;

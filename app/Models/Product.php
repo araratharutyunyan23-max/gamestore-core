@@ -6,12 +6,12 @@ namespace App\Models;
 
 use App\Domain\Catalog\Enums\ProductType;
 use App\Domain\Catalog\Enums\SupplyMode;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
-use Illuminate\Support\Carbon;
 
 /**
  * Товар каталога.
@@ -28,8 +28,8 @@ use Illuminate\Support\Carbon;
  * @property SupplyMode $supply_mode
  * @property bool $is_active
  * @property bool $in_stock
- * @property Carbon $created_at
- * @property Carbon $updated_at
+ * @property CarbonImmutable $created_at
+ * @property CarbonImmutable $updated_at
  * @property-read ProductStock|null $stock
  * @property-read Collection<int, LicenseKey> $licenseKeys
  */

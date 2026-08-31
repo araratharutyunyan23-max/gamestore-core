@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Support\Carbon;
 
 /**
  * Денормализованный остаток.
@@ -24,7 +24,7 @@ use Illuminate\Support\Carbon;
  * @property int $available_count
  * @property int $reserved_count
  * @property int $issued_count
- * @property Carbon $updated_at
+ * @property CarbonImmutable $updated_at
  * @property-read Product $product
  */
 final class ProductStock extends Model

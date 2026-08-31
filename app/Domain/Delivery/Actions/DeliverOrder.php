@@ -19,6 +19,8 @@ use App\Domain\Ordering\Enums\OrderStatus;
 use App\Domain\Ordering\Repositories\OrderRepository;
 use App\Domain\Ordering\StateMachine\OrderStateMachine;
 use App\Domain\Payments\Enums\PaymentProjectionState;
+use App\Domain\Reconciliation\Enums\FindingKind;
+use App\Domain\Reconciliation\Repositories\ReconciliationFindingRepository;
 use App\Models\Order;
 use App\Support\Cfg;
 use App\Support\StructuredLog;
@@ -55,6 +57,7 @@ final readonly class DeliverOrder
         private LedgerRepository $ledger,
         private DeliverViaSupplier $supplier,
         private SupplierCodeRepository $codes,
+        private ReconciliationFindingRepository $findings,
     ) {}
 
     /**
@@ -279,22 +282,10 @@ final readonly class DeliverOrder
 
     private function flagPaymentRevoked(Order $order): void
     {
-        $this->db->table('orders')->where('id', $order->id)->update([
-            'needs_review' => true,
-            'review_reason' => 'payment_revoked_before_delivery',
-            'updated_at' => now(),
-        ]);
+        $this->orders->flagForReview($order->id, 'payment_revoked_before_delivery');
 
-        $this->db->table('reconciliation_findings')->insertOrIgnore([
-            'kind' => 'payment_revoked',
-            'severity' => 'critical',
-            'order_id' => $order->id,
-            'subject_ref' => $order->public_id,
-            'details' => json_encode(
-                ['projection' => $order->paymentState?->state->value],
-                JSON_THROW_ON_ERROR,
-            ),
-            'detected_at' => now(),
+        $this->findings->record(FindingKind::PaymentRevoked, $order->id, $order->public_id, [
+            'projection' => $order->paymentState?->state->value,
         ]);
 
         StructuredLog::delivery('delivery_blocked', $order->public_id, reason: 'payment_not_confirmed');
