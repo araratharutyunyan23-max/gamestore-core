@@ -18,6 +18,18 @@ parameters:
     ignoreErrors: []
     reportUnmatchedIgnoredErrors: true
 
+    strictRules:
+        allRules: true
+        # Единственное отключённое правило, и оно отключено не ради нашего кода.
+        # Larastan объявляет методы Eloquent-билдера (where, count, orderBy и КАЖДЫЙ
+        # локальный скоуп) как `@method static`, поэтому любая цепочка вида
+        # `Order::query()->where(...)->count()` выглядит для правила как вызов
+        # статического метода на объекте. Правило несовместимо с fluent-API
+        # фреймворка по построению и помечает идиому, а не дефект.
+        # Альтернатива — сотни записей в ignoreErrors, что хуже: она заодно
+        # скрыла бы настоящие находки.
+        dynamicCallOnStaticMethod: false
+
     treatPhpDocTypesAsCertain: false
     checkOctaneCompatibility: false
 

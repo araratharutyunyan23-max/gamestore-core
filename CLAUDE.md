@@ -127,6 +127,12 @@ parameters:
 ### 2.1. Правила, а не подавление
 
 - `ignoreErrors` и baseline **запрещены**. Ошибка уровня 9 чинится типом, а не глушится.
+- Единственное отключённое правило — `strictRules.dynamicCallOnStaticMethod`, и отключено
+  оно не ради нашего кода. Larastan объявляет методы Eloquent-билдера (`where`, `count`,
+  `orderBy` и **каждый** локальный скоуп) как `@method static`, поэтому любая цепочка
+  `Order::query()->where(...)->count()` выглядит для правила как вызов статического метода
+  на объекте. Правило несовместимо с fluent-API фреймворка по построению. Альтернатива —
+  сотни записей в `ignoreErrors` — хуже: она заодно скрыла бы настоящие находки.
 - `mixed` не пересекает границу метода. Пришёл `mixed` (JSON, `DB::select`, `getHandlerContext()`) —
   сузили через `is_int`/`is_string`/`is_array` **в том же методе** и дальше отдали точный тип.
 - `Model::find()` возвращает `mixed`/`?Model`. Поэтому **из репозитория наружу типы точные**:
@@ -200,28 +206,31 @@ parameters:
 **Любая формулировка «ровно один раз» в коде или README обязана указывать имя индекса,
 который это обеспечивает.** Утверждение без индекса — не гарантия, а надежда.
 
-Обязательный минимум:
+Реализовано в Ш1, каждая строка проверяется тестом `SchemaContractTest`:
 
-```sql
-CREATE UNIQUE INDEX orders_public_id_uq            ON orders (public_id);
-CREATE UNIQUE INDEX orders_idempotency_key_uq      ON orders (idempotency_key);
-CREATE UNIQUE INDEX payment_events_event_id_uq     ON payment_events (event_id);
-CREATE UNIQUE INDEX payment_events_one_applied_paid ON payment_events (order_id)
-    WHERE status = 'paid' AND process_state = 'applied';
-CREATE UNIQUE INDEX deliveries_order_uq            ON deliveries (order_id);
-CREATE UNIQUE INDEX delivery_attempts_request_uq   ON delivery_attempts (request_id);
-CREATE UNIQUE INDEX delivery_attempts_one_open_uq  ON delivery_attempts (order_id)
-    WHERE outcome IN ('in_flight','timeout','unknown');
-CREATE UNIQUE INDEX delivery_attempts_one_success_uq ON delivery_attempts (order_id)
-    WHERE outcome = 'succeeded';
-CREATE UNIQUE INDEX supplier_issued_codes_rid_uq   ON supplier_issued_codes (request_id);
-CREATE UNIQUE INDEX license_keys_code_uq           ON license_keys (code_hash);
-CREATE UNIQUE INDEX license_keys_delivery_uq       ON license_keys (delivery_id) WHERE delivery_id IS NOT NULL;
-CREATE UNIQUE INDEX ledger_entries_pair_uq         ON ledger_entries (transaction_id, account_id, direction);
-```
+| Гарантия | Индекс |
+|---|---|
+| повтор создания заказа не создаёт второй | `orders_idempotency_key_uq` |
+| внешний id заказа уникален | `orders_public_id_uq` |
+| повторный вебхук ничего не меняет | `payment_events_event_id_uq` |
+| 50 вебхуков с **разными** `event_id` дают одну проводку | `payment_events_one_applied_paid_uq` |
+| товар выдаётся ровно один раз | `deliveries_order_uq` |
+| один код не уйдёт в два заказа | `deliveries_code_hash_uq` |
+| ключ из пула не уйдёт в два заказа | `deliveries_license_key_uq`, `license_keys_delivery_uq` |
+| один код существует в пуле один раз | `license_keys_code_hash_uq` |
+| **таймаут не открывает путь ко второму поставщику** | `delivery_attempts_one_open_uq` |
+| повтор после таймаута не создаёт вторую выдачу | `delivery_attempts_one_success_uq` |
+| один вызов учитывается один раз | `delivery_attempts_request_uq` |
+| одна попытка на (заказ, поставщик, эпоха) | `delivery_attempts_epoch_uq` |
+| купленный код не теряется и не задваивается | `supplier_issued_codes_request_uq`, `supplier_issued_codes_hash_uq` |
+| деньги не проводятся дважды | `ledger_transactions_idempotency_uq` |
+| повторная проводка не удваивает остатки | `ledger_entries_pair_uq` |
+| одна открытая находка на (вид, субъект) | `reconciliation_findings_open_uq` |
 
-Плюс BEFORE UPDATE триггер `orders_no_final_downgrade`: из `delivered`, `payment_failed`,
-`refunded`, `cancelled`, `charged_back` выхода нет ни из кода, ни из psql, ни из миграции.
+Плюс семь триггеров: `orders_no_final_downgrade` (из `delivered`, `payment_failed`,
+`cancelled` выхода нет ни из кода, ни из psql, ни из миграции), `products_ensure_stock_row`,
+`product_stock_flag_ins` + `product_stock_flag_upd`, `license_keys_no_reassign`,
+`ledger_entries_balanced` (отложенный, на COMMIT), `ledger_entries_immutable`.
 
 ### 5.2. Границы транзакций
 
