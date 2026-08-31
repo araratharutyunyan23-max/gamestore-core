@@ -142,7 +142,10 @@ parameters:
 - Модели аннотируются `@property` через `php artisan ide-helper:models` в PHPDoc-блок класса.
 - Аннотация над сырым запросом **не является защитой**: `@var list<object{id:int}>` над `DB::select`
   PHPStan примет на веру, а PDO вернёт строки. Поэтому — см. §6.4 про `::bigint` и явный каст.
-- Пишущие методы репозиториев объявляют `@throws \Illuminate\Database\UniqueConstraintViolationException`.
+- `@throws` ставится там, где PHPStan действительно видит бросок. Нарушение уникального
+  индекса бросает не метод, а драйвер БД, поэтому `@throws UniqueConstraintViolationException`
+  на методе репозитория — ложь, и `tooWideThrowType` её ловит. Ожидание 23505 документируется
+  комментарием в месте обработки, а обработка живёт **снаружи** транзакции.
 - `match` по enum пишем **без `default`** — тогда level 9 сам поймает незакрытую ветку
   при добавлении кейса.
 

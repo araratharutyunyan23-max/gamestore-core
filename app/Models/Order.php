@@ -8,6 +8,7 @@ use App\Domain\Ordering\Enums\OrderStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Carbon;
 
 /**
@@ -41,6 +42,8 @@ use Illuminate\Support\Carbon;
  * @property Carbon $created_at
  * @property Carbon $updated_at
  * @property-read Product $product
+ * @property-read Delivery|null $delivery
+ * @property-read OrderPaymentState|null $paymentState
  */
 final class Order extends Model
 {
@@ -65,6 +68,28 @@ final class Order extends Model
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class, 'product_id');
+    }
+
+    /**
+     * Ровно одна выдача на заказ — это держит индекс deliveries_order_uq,
+     * поэтому связь hasOne, а не hasMany.
+     *
+     * @return HasOne<Delivery, $this>
+     */
+    public function delivery(): HasOne
+    {
+        return $this->hasOne(Delivery::class, 'order_id');
+    }
+
+    /**
+     * Состояние оплаты — отдельная проекция, а не поле заказа: поздний failed
+     * обязан стать правдой о деньгах, не отменяя уже отданный код.
+     *
+     * @return HasOne<OrderPaymentState, $this>
+     */
+    public function paymentState(): HasOne
+    {
+        return $this->hasOne(OrderPaymentState::class, 'order_id');
     }
 
     /**
