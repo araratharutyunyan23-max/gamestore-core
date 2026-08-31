@@ -53,6 +53,65 @@ final class ProjectStandardsTest extends TestCase
     }
 
     #[Test]
+    public function http_calls_go_through_the_framework_client(): void
+    {
+        // Сырой curl в проекте на Laravel — это ручной boilerplate вокруг того же
+        // curl_multi, который Http-клиент уже даёт поверх Guzzle: инициализация,
+        // проверки на false, ручной json_decode, лишние сужения типов для level 9.
+        // Прямой new GuzzleHttp\Client тоже запрещён: он обходит конфигурацию
+        // таймаутов, ретраев и Http::fake() в тестах.
+        $forbidden = [
+            'curl_init(' => 'Http::post()/Http::get()',
+            'curl_exec(' => 'Http::post()/Http::get()',
+            'curl_multi_init(' => 'Http::pool()',
+            'curl_setopt' => 'Http::withOptions()',
+            'new Client(' => 'фасад Http',
+            'new \\GuzzleHttp\\Client(' => 'фасад Http',
+        ];
+
+        $offenders = [];
+
+        foreach (self::phpFilesIn(['app']) as $file) {
+            $contents = (string) file_get_contents($file);
+
+            foreach ($forbidden as $needle => $replacement) {
+                if (str_contains($contents, $needle)) {
+                    $offenders[] = basename($file)." → {$needle} вместо {$replacement}";
+                }
+            }
+        }
+
+        self::assertSame(
+            [],
+            $offenders,
+            "HTTP-вызовы идут только через Http-клиент Laravel:\n".implode("\n", $offenders),
+        );
+    }
+
+    #[Test]
+    public function every_queued_job_handles_its_own_failure(): void
+    {
+        // Задача без failed() оставляет заказ в промежуточном статусе навсегда:
+        // попытки кончились, задачи больше нет, а ни один восстановительный
+        // путь такой заказ не видит (CLAUDE.md §1.3).
+        $offenders = [];
+
+        foreach (self::phpFilesIn(['app/Jobs']) as $file) {
+            $contents = (string) file_get_contents($file);
+
+            if (! str_contains($contents, 'implements ShouldQueue')) {
+                continue;
+            }
+
+            if (! str_contains($contents, 'public function failed(')) {
+                $offenders[] = basename($file);
+            }
+        }
+
+        self::assertSame([], $offenders, "Джобы без failed():\n".implode("\n", $offenders));
+    }
+
+    #[Test]
     public function controllers_contain_no_persistence_or_business_logic(): void
     {
         $forbidden = ['DB::', 'Cache::', 'Http::', 'Queue::', '::query(', '->save(', 'DB::transaction'];

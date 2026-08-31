@@ -51,6 +51,10 @@ services:
       DB_PORT: "5432"
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      # Встроенный сервер PHP по умолчанию однопоточный: 50 «параллельных»
+      # вебхуков выстроились бы в очередь, и гонка, которую мы обязаны
+      # доказать, просто не возникла бы.
+      PHP_CLI_SERVER_WORKERS: "16"
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}

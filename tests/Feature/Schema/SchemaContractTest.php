@@ -164,10 +164,19 @@ final class SchemaContractTest extends TestCase
         return $matches[1];
     }
 
+    /**
+     * Проверяется именно УНИКАЛЬНОСТЬ, а не наличие индекса с нужным именем.
+     * Обычный индекс ничего не гарантирует, и тест на его существование
+     * выдавал бы разрешение на утверждение «ровно один раз» задаром.
+     */
     private function indexExists(string $name): bool
     {
         /** @var list<object{count: int}> $rows */
-        $rows = DB::select('SELECT count(*)::int AS count FROM pg_indexes WHERE indexname = ?', [$name]);
+        $rows = DB::select(
+            "SELECT count(*)::int AS count FROM pg_indexes
+              WHERE indexname = ? AND indexdef LIKE 'CREATE UNIQUE INDEX%'",
+            [$name],
+        );
 
         return $rows !== [] && $rows[0]->count === 1;
     }
