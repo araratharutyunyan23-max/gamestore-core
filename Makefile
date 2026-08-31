@@ -10,16 +10,26 @@ help: ## Показать доступные цели
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-up: ## Поднять окружение (app:8000, pg:5434, redis:6381)
+up: ## Поднять окружение с нуля: зависимости, схема, сид (app:8000, pg:5434, redis:6381)
 	@test -f .env || cp .env.example .env
-	$(DC) up -d --build
+	$(DC) build
+	@# Хранилища поднимаются первыми: воркерам без них стартовать не в чем,
+	@# а зависимостей ещё нет.
+	$(DC) up -d postgres redis supplier-redis
+	@# Обязательный шаг. На чистом клоне vendor/ отсутствует, и без установки
+	@# зависимостей падает всё, начиная с artisan.
+	$(DC) run --rm --no-deps app composer install --no-interaction --prefer-dist --no-progress
+	@grep -q '^APP_KEY=base64:' .env || $(DC) run --rm --no-deps app php artisan key:generate --force
+	$(DC) up -d
 	@$(APP) php artisan migrate --force
 	@# Отдельная БД под тесты: набор Race работает без обёрточной транзакции
 	@# и TRUNCATE'ит таблицы, поэтому в рабочую БД он ходить не должен.
 	@$(DC) exec -T postgres psql -U gamestore -d gamestore -tc \
 		"SELECT 1 FROM pg_database WHERE datname='gamestore_test'" | grep -q 1 \
 		|| $(DC) exec -T postgres createdb -U gamestore gamestore_test
-	@echo "готово: http://localhost:8000"
+	@$(APP) php artisan db:seed --force
+	@echo ""
+	@echo "готово: http://localhost:8000 — каталог засеян, можно make demo"
 
 down: ## Остановить и удалить контейнеры
 	$(DC) down

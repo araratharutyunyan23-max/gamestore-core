@@ -15,3 +15,12 @@ use Illuminate\Support\Facades\Schedule;
 Schedule::command('payments:drain-unapplied')
     ->everyMinute()
     ->withoutOverlapping();
+
+/*
+| Судьба обращения, закончившегося неизвестностью, выясняется только повтором
+| probe по ТОМУ ЖЕ request_id. Новый идентификатор здесь не создаётся никогда —
+| он означал бы покупку второго кода.
+*/
+Schedule::command('delivery:resolve-unknown')
+    ->everyMinute()
+    ->withoutOverlapping();

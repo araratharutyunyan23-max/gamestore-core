@@ -6,8 +6,8 @@ namespace App\Models;
 
 use App\Domain\Payments\Enums\PaymentEventState;
 use App\Domain\Payments\Enums\PaymentStatus;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Carbon;
 
 /**
  * Инбокс платёжных событий. Он же источник истины для восстановления:
@@ -21,9 +21,9 @@ use Illuminate\Support\Carbon;
  * @property PaymentStatus $status
  * @property int|null $amount_minor
  * @property string|null $currency
- * @property Carbon|null $occurred_at
- * @property Carbon $received_at
- * @property Carbon|null $applied_at
+ * @property CarbonImmutable|null $occurred_at
+ * @property CarbonImmutable $received_at
+ * @property CarbonImmutable|null $applied_at
  * @property PaymentEventState $process_state
  * @property int $attempts
  * @property string $body_fingerprint

@@ -116,6 +116,52 @@ services:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
 
+  # Две заглушки поставщика из одного образа. Отдельный Redis со включённым
+  # AOF и своим томом: если стор потеряет данные, повтор с тем же request_id
+  # выдаст ВТОРОЙ код и сломает контракт идемпотентности на ровном месте.
+  supplier-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - supplierdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  supplier-a:
+    build:
+      context: ./docker/supplier
+    ports:
+      - "8001:8080"
+    environment:
+      SUPPLIER_NAME: A
+      SUPPLIER_REDIS_HOST: supplier-redis
+      SUPPLIER_REDIS_PORT: "6379"
+      # Доли сбоев из задания — поведение по умолчанию для демонстрации.
+      # Тесты задают режим предписанно, потому что тест на вероятности —
+      # это не тест.
+      SUPPLIER_ERROR_RATE: "0"
+      SUPPLIER_TIMEOUT_RATE: "0"
+    depends_on:
+      supplier-redis: {condition: service_healthy}
+
+  supplier-b:
+    build:
+      context: ./docker/supplier
+    ports:
+      - "8002:8080"
+    environment:
+      SUPPLIER_NAME: B
+      SUPPLIER_REDIS_HOST: supplier-redis
+      SUPPLIER_REDIS_PORT: "6379"
+      SUPPLIER_ERROR_RATE: "0"
+      SUPPLIER_TIMEOUT_RATE: "0"
+    depends_on:
+      supplier-redis: {condition: service_healthy}
+
 volumes:
   pgdata:
   redisdata:
+  supplierdata:

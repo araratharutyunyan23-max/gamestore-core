@@ -43,15 +43,7 @@ final readonly class CreateOrder
         $product = $this->products->purchasableBySku($command->sku);
 
         try {
-            Order::query()->create([
-                'public_id' => $this->orders->nextPublicId(),
-                'idempotency_key' => $command->idempotencyKey,
-                'product_id' => $product->id,
-                // Цена и SKU фиксируются снимком: каталог меняется, история — нет.
-                'sku' => $product->sku,
-                'amount_minor' => $product->price_minor,
-                'currency' => $product->currency,
-            ]);
+            $this->orders->create($this->orders->nextPublicId(), $command->idempotencyKey, $product);
         } catch (UniqueConstraintViolationException) {
             // Конкурент успел первым с тем же ключом идемпотентности.
             // Это штатный исход повторной отправки, а не ошибка.

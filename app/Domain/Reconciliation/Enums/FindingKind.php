@@ -53,9 +53,16 @@ enum FindingKind: string
 
     public function severity(): FindingSeverity
     {
+        // Перечислено полностью: новый вид находки обязан получить severity
+        // осознанно, а не унаследовать critical по умолчанию.
         return match ($this) {
             self::AwaitingRestock => FindingSeverity::Warning,
-            default => FindingSeverity::Critical,
+            self::PaidNotDelivered, self::DeliveredNotPaid, self::AmountMismatch,
+            self::OrphanEvent, self::UnappliedPayment, self::StuckDelivery,
+            self::AttemptUnknown, self::StockDrift, self::DuplicateCode,
+            self::LedgerUnbalanced, self::LatePaymentFailure, self::PaymentRevoked,
+            self::EventIdReuse, self::SupplierPossibleDoubleCharge,
+            self::SupplierSurplusCode => FindingSeverity::Critical,
         };
     }
 

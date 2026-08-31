@@ -40,4 +40,43 @@ final class Cfg
     {
         return config()->integer('payments.drain_batch_size');
     }
+
+    public static function supplierConnectTimeout(): float
+    {
+        return config()->float('suppliers.connect_timeout');
+    }
+
+    public static function supplierIssueTimeout(): float
+    {
+        return config()->float('suppliers.issue_timeout');
+    }
+
+    /**
+     * Раньше этого срока probe спрашивать бессмысленно: он обгонит живую
+     * обработку и ответит «не знаю такого» за миллисекунды до выдачи кода.
+     */
+    public static function supplierMaxProcessing(): float
+    {
+        return config()->float('suppliers.max_processing');
+    }
+
+    public static function supplierRetries(): int
+    {
+        return config()->integer('suppliers.retries');
+    }
+
+    public static function supplierRetryBaseMs(): int
+    {
+        return config()->integer('suppliers.retry_base_ms');
+    }
+
+    public static function allowCompensatedFallback(): bool
+    {
+        return config()->boolean('suppliers.allow_compensated_fallback');
+    }
+
+    public static function supplierUrl(string $name): string
+    {
+        return config()->string('suppliers.'.strtolower($name).'.url');
+    }
 }

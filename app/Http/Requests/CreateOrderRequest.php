@@ -13,6 +13,8 @@ use Illuminate\Validation\Validator;
  */
 final class CreateOrderRequest extends FormRequest
 {
+    private const MAX_KEY_LENGTH = 128;
+
     /**
      * @return array<string, list<string>>
      */
@@ -30,8 +32,21 @@ final class CreateOrderRequest extends FormRequest
             // Генерировать его самим нельзя: сгенерированный на сервере ключ
             // уникален на каждый запрос, то есть повтор создаст второй заказ —
             // ровно то, от чего заголовок и защищает.
-            if ($this->idempotencyKey() === null) {
+            $key = $this->idempotencyKey();
+
+            if ($key === null) {
                 $validator->errors()->add('Idempotency-Key', 'Заголовок Idempotency-Key обязателен.');
+
+                return;
+            }
+
+            // Длина проверяется здесь, а не в БД: колонка varchar(128), и без
+            // проверки слишком длинный ключ давал бы 500 вместо внятного 422.
+            if (mb_strlen($key) > self::MAX_KEY_LENGTH) {
+                $validator->errors()->add(
+                    'Idempotency-Key',
+                    'Заголовок Idempotency-Key длиннее '.self::MAX_KEY_LENGTH.' символов.',
+                );
             }
         });
     }

@@ -7,6 +7,7 @@ namespace App\Domain\Ordering\Repositories;
 use App\Domain\Ordering\DTO\DeliveryLease;
 use App\Domain\Ordering\Enums\OrderStatus;
 use App\Models\Order;
+use App\Models\Product;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\Query\Builder;
 
@@ -56,6 +57,24 @@ final readonly class OrderRepository
             ->where('id', $id)
             ->lock('for no key update')
             ->first();
+    }
+
+    /**
+     * Создать заказ. Нарушение orders_idempotency_key_uq означает, что
+     * конкурент успел первым с тем же ключом, и это штатный исход повторной
+     * отправки — обрабатывается вызывающим кодом.
+     */
+    public function create(string $publicId, string $idempotencyKey, Product $product): void
+    {
+        Order::query()->create([
+            'public_id' => $publicId,
+            'idempotency_key' => $idempotencyKey,
+            'product_id' => $product->id,
+            // Цена и SKU фиксируются снимком: каталог меняется, история — нет.
+            'sku' => $product->sku,
+            'amount_minor' => $product->price_minor,
+            'currency' => $product->currency,
+        ]);
     }
 
     /**

@@ -14,7 +14,10 @@ use App\Domain\Ordering\StateMachine\OrderStateMachine;
 use App\Domain\Payments\Enums\PaymentEventState;
 use App\Domain\Payments\Enums\PaymentProjectionState;
 use App\Domain\Payments\Enums\PaymentStatus;
+use App\Domain\Payments\Repositories\OrderPaymentStateRepository;
 use App\Domain\Payments\Repositories\PaymentEventRepository;
+use App\Domain\Reconciliation\Enums\FindingKind;
+use App\Domain\Reconciliation\Repositories\ReconciliationFindingRepository;
 use App\Models\Order;
 use App\Models\PaymentEvent;
 use App\Support\StructuredLog;
@@ -47,6 +50,8 @@ final readonly class ApplyPaymentEvent
         private OrderRepository $orders,
         private OrderStateMachine $stateMachine,
         private LedgerRepository $ledger,
+        private OrderPaymentStateRepository $paymentStates,
+        private ReconciliationFindingRepository $findings,
     ) {}
 
     /**
@@ -117,7 +122,11 @@ final readonly class ApplyPaymentEvent
             return PaymentEventState::OrderMissing;
         }
 
-        if (! $this->projectPaymentState($event, $order)) {
+        $projected = $event->status === PaymentStatus::Paid
+            ? PaymentProjectionState::Paid
+            : PaymentProjectionState::Failed;
+
+        if (! $this->paymentStates->project($order->id, $event, $projected)) {
             // Событие старше уже применённого: отбрасываем, не трогая деньги.
             $this->events->markProcessed($event, PaymentEventState::Stale);
 
@@ -131,47 +140,6 @@ final readonly class ApplyPaymentEvent
         $this->events->markProcessed($event, $state);
 
         return $state;
-    }
-
-    /**
-     * Монотонный upsert проекции по кортежу (occurred_at, received_at, id).
-     *
-     * Именно он реализует требование «вебхуки могут прийти не по порядку»:
-     * решает не порядок доставки, а метка времени события у платёжной системы.
-     *
-     * @return bool false, если событие устарело
-     */
-    private function projectPaymentState(PaymentEvent $event, Order $order): bool
-    {
-        $projected = $event->status === PaymentStatus::Paid
-            ? PaymentProjectionState::Paid
-            : PaymentProjectionState::Failed;
-
-        $affected = $this->db->affectingStatement(<<<'SQL'
-            INSERT INTO order_payment_states
-                (order_id, state, occurred_at, received_at, event_row_id, last_event_id, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, now())
-            ON CONFLICT (order_id) DO UPDATE
-               SET state = EXCLUDED.state,
-                   occurred_at = EXCLUDED.occurred_at,
-                   received_at = EXCLUDED.received_at,
-                   event_row_id = EXCLUDED.event_row_id,
-                   last_event_id = EXCLUDED.last_event_id,
-                   updated_at = now()
-             WHERE (order_payment_states.occurred_at,
-                    order_payment_states.received_at,
-                    order_payment_states.event_row_id)
-                 < (EXCLUDED.occurred_at, EXCLUDED.received_at, EXCLUDED.event_row_id)
-        SQL, [
-            $order->id,
-            $projected->value,
-            $event->occurred_at ?? $event->received_at,
-            $event->received_at,
-            $event->id,
-            $event->event_id,
-        ]);
-
-        return $affected === 1;
     }
 
     private function applyPaid(PaymentEvent $event, Order $order): PaymentEventState
@@ -255,11 +223,8 @@ final readonly class ApplyPaymentEvent
             return PaymentEventState::Applied;
         }
 
-        $this->db->table('orders')->where('id', $order->id)->update([
-            'needs_review' => true,
-            'review_reason' => 'late_payment_failure',
-            'updated_at' => now(),
-        ]);
+        $this->orders->flagForReview($order->id, FindingKind::LatePaymentFailure->value);
+        $this->findings->record(FindingKind::LatePaymentFailure, $order->id, $order->public_id);
 
         StructuredLog::payment('payment_late_failure', $order->public_id, $order->status->value, $order->status->value);
 

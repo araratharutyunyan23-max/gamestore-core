@@ -113,6 +113,34 @@ final class SchemaContractTest extends TestCase
     }
 
     #[Test]
+    public function statuses_written_literally_in_sql_match_their_enums(): void
+    {
+        // Часть запросов держит статус ЛИТЕРАЛОМ, а не параметром, и это
+        // осознанно: частичные индексы (license_keys_available_idx и другие)
+        // объявлены с константой в предикате, и связанный параметр помешал бы
+        // планировщику их выбрать.
+        //
+        // Цена решения — риск разойтись при переименовании кейса энума.
+        // Закрывает его этот тест: он фиксирует конкретные строки, на которые
+        // опирается SQL.
+        self::assertSame('available', LicenseKeyStatus::Available->value);
+        self::assertSame('reserved', LicenseKeyStatus::Reserved->value);
+        self::assertSame('issued', LicenseKeyStatus::Issued->value);
+
+        self::assertSame('in_flight', AttemptOutcome::InFlight->value);
+        self::assertSame('timeout', AttemptOutcome::Timeout->value);
+        self::assertSame('unknown', AttemptOutcome::Unknown->value);
+        self::assertSame('succeeded', AttemptOutcome::Succeeded->value);
+
+        self::assertSame('paid', OrderStatus::Paid->value);
+        self::assertSame('delivering', OrderStatus::Delivering->value);
+        self::assertSame('out_of_stock', OrderStatus::OutOfStock->value);
+        self::assertSame('delivery_failed', OrderStatus::DeliveryFailed->value);
+
+        self::assertSame('applied', PaymentEventState::Applied->value);
+    }
+
+    #[Test]
     public function final_order_statuses_cannot_be_left(): void
     {
         foreach (OrderStatus::cases() as $status) {

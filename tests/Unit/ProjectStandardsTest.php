@@ -112,6 +112,66 @@ final class ProjectStandardsTest extends TestCase
     }
 
     #[Test]
+    public function application_code_sleeps_only_through_the_framework(): void
+    {
+        // Прямой sleep()/usleep() невозможно ускорить в тестах: Sleep::fake()
+        // на него не действует, и каждый прогон честно ждёт реальное время.
+        // В тестовой обвязке (поднятие серверов) прямой вызов допустим — там
+        // ждут не логику, а процесс операционной системы.
+        $offenders = [];
+
+        foreach (self::phpFilesIn(['app']) as $file) {
+            $contents = (string) file_get_contents($file);
+
+            foreach (["\nusleep(", ' usleep(', "\nsleep(", ' sleep('] as $needle) {
+                if (str_contains($contents, $needle)) {
+                    $offenders[] = basename($file);
+                }
+            }
+        }
+
+        self::assertSame(
+            [],
+            array_values(array_unique($offenders)),
+            "Ожидание в коде приложения идёт только через Illuminate\\Support\\Sleep:\n"
+            .implode("\n", array_unique($offenders)),
+        );
+    }
+
+    #[Test]
+    public function actions_delegate_all_sql_to_repositories(): void
+    {
+        // Правило из CLAUDE.md §1: весь доступ к таблицам живёт в Repository.
+        // Оно не про красоту: SQL, размазанный по сервисам, невозможно проверить
+        // на согласованность с индексами, а именно индексы держат все гарантии.
+        //
+        // Открытие транзакции сервисом разрешено: границы транзакции — это
+        // бизнес-решение, а не деталь доступа к данным.
+        $forbidden = ['->table(', '->select(', '->statement(', '->affectingStatement(', 'DB::table', 'DB::select'];
+        $offenders = [];
+
+        foreach (self::phpFilesIn(['app/Domain']) as $file) {
+            if (! str_contains($file, '/Actions/')) {
+                continue;
+            }
+
+            $contents = (string) file_get_contents($file);
+
+            foreach ($forbidden as $needle) {
+                if (str_contains($contents, $needle)) {
+                    $offenders[] = basename($file).' → '.$needle;
+                }
+            }
+        }
+
+        self::assertSame(
+            [],
+            $offenders,
+            "Сервисы обращаются к таблицам напрямую (CLAUDE.md §1):\n".implode("\n", $offenders),
+        );
+    }
+
+    #[Test]
     public function controllers_contain_no_persistence_or_business_logic(): void
     {
         $forbidden = ['DB::', 'Cache::', 'Http::', 'Queue::', '::query(', '->save(', 'DB::transaction'];

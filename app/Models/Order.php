@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Domain\Ordering\Enums\OrderStatus;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasOne;
-use Illuminate\Support\Carbon;
 
 /**
  * Заказ. Одна позиция, quantity = 1 (CLAUDE.md §10.1).
@@ -28,19 +28,19 @@ use Illuminate\Support\Carbon;
  * @property string $currency
  * @property OrderStatus $status
  * @property string|null $lease_token
- * @property Carbon|null $lease_expires_at
+ * @property CarbonImmutable|null $lease_expires_at
  * @property string|null $lease_owner
  * @property int $delivery_epoch
  * @property int $restock_waits
- * @property Carbon $status_changed_at
- * @property Carbon $next_action_at
+ * @property CarbonImmutable $status_changed_at
+ * @property CarbonImmutable $next_action_at
  * @property bool $needs_review
  * @property string|null $review_reason
- * @property Carbon|null $paid_at
- * @property Carbon|null $delivered_at
- * @property Carbon|null $failed_at
- * @property Carbon $created_at
- * @property Carbon $updated_at
+ * @property CarbonImmutable|null $paid_at
+ * @property CarbonImmutable|null $delivered_at
+ * @property CarbonImmutable|null $failed_at
+ * @property CarbonImmutable $created_at
+ * @property CarbonImmutable $updated_at
  * @property-read Product $product
  * @property-read Delivery|null $delivery
  * @property-read OrderPaymentState|null $paymentState

@@ -6,8 +6,11 @@ namespace App\Domain\Delivery\Actions;
 
 use App\Domain\Catalog\Enums\SupplyMode;
 use App\Domain\Delivery\DTO\DeliveryOutcome;
+use App\Domain\Delivery\Enums\CodeDisposition;
+use App\Domain\Delivery\Enums\SupplierName;
 use App\Domain\Delivery\Repositories\DeliveryRepository;
 use App\Domain\Delivery\Repositories\LicenseKeyRepository;
+use App\Domain\Delivery\Repositories\SupplierCodeRepository;
 use App\Domain\Ledger\Enums\LedgerAccount;
 use App\Domain\Ledger\Enums\LedgerDirection;
 use App\Domain\Ledger\Enums\LedgerTransactionKind;
@@ -16,6 +19,8 @@ use App\Domain\Ordering\Enums\OrderStatus;
 use App\Domain\Ordering\Repositories\OrderRepository;
 use App\Domain\Ordering\StateMachine\OrderStateMachine;
 use App\Domain\Payments\Enums\PaymentProjectionState;
+use App\Domain\Reconciliation\Enums\FindingKind;
+use App\Domain\Reconciliation\Repositories\ReconciliationFindingRepository;
 use App\Models\Order;
 use App\Support\Cfg;
 use App\Support\StructuredLog;
@@ -50,6 +55,9 @@ final readonly class DeliverOrder
         private DeliveryRepository $deliveries,
         private LicenseKeyRepository $keys,
         private LedgerRepository $ledger,
+        private DeliverViaSupplier $supplier,
+        private SupplierCodeRepository $codes,
+        private ReconciliationFindingRepository $findings,
     ) {}
 
     /**
@@ -77,10 +85,6 @@ final readonly class DeliverOrder
             return DeliveryOutcome::PaymentNotConfirmed;
         }
 
-        if ($order->product->supply_mode === SupplyMode::Supplier) {
-            return DeliveryOutcome::SupplierNotImplemented;
-        }
-
         // Взаимное исключение — аренда, а не статус. По статусу невозможно
         // отличить «я начал выдачу» от «выдачу уже ведёт другой воркер»:
         // переход delivering -> delivering машина состояний не разрешает,
@@ -105,6 +109,13 @@ final readonly class DeliverOrder
         $outcome = DeliveryOutcome::NotDeliverable;
 
         try {
+            // Для товара от поставщика порядок принципиально другой: сетевой
+            // вызов обязан идти ВНЕ транзакции, поэтому весь путь целиком
+            // в transaction() не заворачивается.
+            if ($order->product->supply_mode === SupplyMode::Supplier) {
+                return $this->deliverFromSupplier($order);
+            }
+
             $this->db->transaction(function () use ($order, &$outcome): void {
                 $outcome = $this->deliverFromPool($order);
             });
@@ -185,24 +196,96 @@ final readonly class DeliverOrder
         return DeliveryOutcome::Delivered;
     }
 
+    /**
+     * Выдача кодом внешнего поставщика.
+     *
+     * Транзакция открывается ДВАЖДЫ и обе — короткие: перевод в delivering до
+     * вызова и фиксация результата после. Между ними сетевой вызов, во время
+     * которого никаких блокировок мы не держим.
+     */
+    private function deliverFromSupplier(Order $order): DeliveryOutcome
+    {
+        if ($order->status !== OrderStatus::Delivering
+            && ! $this->stateMachine->tryTransition($order, OrderStatus::Delivering, reason: 'delivery_started')->changedAnything()) {
+            return DeliveryOutcome::NotDeliverable;
+        }
+
+        $result = $this->supplier->execute($order);
+
+        if ($result['outcome'] !== DeliveryOutcome::Delivered) {
+            return $this->handleSupplierFailure($order, $result['outcome']);
+        }
+
+        $captured = $this->codes->findByRequestId((string) $result['request_id']);
+
+        if ($captured === null) {
+            // Код получен, но не записан — такого быть не должно: запись идёт
+            // отдельной микротранзакцией сразу после ответа поставщика.
+            return DeliveryOutcome::NotDeliverable;
+        }
+
+        $outcome = DeliveryOutcome::NotDeliverable;
+
+        $this->db->transaction(function () use ($order, $result, $captured, &$outcome): void {
+            $deliveryId = $this->deliveries->recordFromSupplier(
+                $order,
+                $result['supplier'] ?? SupplierName::primary(),
+                (string) $result['request_id'],
+                $captured->encryptedCode,
+                $captured->codeHash,
+                $captured->codeLast4,
+            );
+
+            $this->codes->assign($captured->id, CodeDisposition::ForOrder);
+            $this->recordRevenue($order);
+            $this->stateMachine->tryTransition($order, OrderStatus::Delivered, reason: 'delivered_from_supplier');
+
+            StructuredLog::delivery('order_delivered', $order->public_id, $captured->codeLast4);
+            $outcome = DeliveryOutcome::Delivered;
+
+            unset($deliveryId);
+        });
+
+        return $outcome;
+    }
+
+    private function handleSupplierFailure(Order $order, DeliveryOutcome $outcome): DeliveryOutcome
+    {
+        // Неизвестность оставляет заказ в delivering: судьба кода выясняется
+        // фоновым разрешением, и объявлять отказ сейчас означало бы разрешить
+        // повторную покупку у другого поставщика.
+        if ($outcome === DeliveryOutcome::AwaitingResolution) {
+            StructuredLog::delivery('delivery_awaiting_resolution', $order->public_id);
+
+            return $outcome;
+        }
+
+        $this->stateMachine->tryTransition($order, OrderStatus::DeliveryFailed, reason: 'suppliers_exhausted');
+        StructuredLog::delivery('delivery_failed', $order->public_id, reason: 'suppliers_exhausted');
+
+        return DeliveryOutcome::DeliveryFailed;
+    }
+
+    private function recordRevenue(Order $order): void
+    {
+        $this->ledger->post(
+            LedgerTransactionKind::OrderDelivered,
+            LedgerTransactionKind::OrderDelivered->idempotencyKeyFor($order->public_id),
+            $order->id,
+            $order->currency,
+            [
+                ['account' => LedgerAccount::CustomerPrepayment, 'direction' => LedgerDirection::Debit, 'amount' => $order->amount_minor],
+                ['account' => LedgerAccount::Revenue, 'direction' => LedgerDirection::Credit, 'amount' => $order->amount_minor],
+            ],
+        );
+    }
+
     private function flagPaymentRevoked(Order $order): void
     {
-        $this->db->table('orders')->where('id', $order->id)->update([
-            'needs_review' => true,
-            'review_reason' => 'payment_revoked_before_delivery',
-            'updated_at' => now(),
-        ]);
+        $this->orders->flagForReview($order->id, 'payment_revoked_before_delivery');
 
-        $this->db->table('reconciliation_findings')->insertOrIgnore([
-            'kind' => 'payment_revoked',
-            'severity' => 'critical',
-            'order_id' => $order->id,
-            'subject_ref' => $order->public_id,
-            'details' => json_encode(
-                ['projection' => $order->paymentState?->state->value],
-                JSON_THROW_ON_ERROR,
-            ),
-            'detected_at' => now(),
+        $this->findings->record(FindingKind::PaymentRevoked, $order->id, $order->public_id, [
+            'projection' => $order->paymentState?->state->value,
         ]);
 
         StructuredLog::delivery('delivery_blocked', $order->public_id, reason: 'payment_not_confirmed');
