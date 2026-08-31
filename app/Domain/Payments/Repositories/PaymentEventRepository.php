@@ -59,10 +59,20 @@ final readonly class PaymentEventRepository
             ->exists();
     }
 
+    /**
+     * Пометить событие обработанным — ТОЛЬКО если оно ещё не обработано.
+     *
+     * Условие `applied_at IS NULL` обязательно. Без него проигравший гонку
+     * обработчик перетирает уже выставленное 'applied' своим 'stale', и тогда
+     * рушится сразу два механизма: индекс payment_events_one_applied_paid_uq
+     * перестаёт видеть применённое событие, а сверка объявляет выданный заказ
+     * неоплаченным.
+     */
     public function markProcessed(PaymentEvent $event, PaymentEventState $state): void
     {
         $this->db->table('payment_events')
             ->where('id', $event->id)
+            ->whereNull('applied_at')
             ->update([
                 'process_state' => $state->value,
                 'applied_at' => now(),

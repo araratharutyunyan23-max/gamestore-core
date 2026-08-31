@@ -98,9 +98,28 @@ final readonly class DeliverOrder
         }
     }
 
-    private function deliverFromPool(Order $order): DeliveryOutcome
+    private function deliverFromPool(Order $stale): DeliveryOutcome
     {
-        $this->stateMachine->tryTransition($order, OrderStatus::Delivering, reason: 'delivery_started');
+        // Проверки выше делались ДО транзакции и к этому моменту могли устареть.
+        // Заказ перечитывается под блокировкой, иначе поздний failed, успевший
+        // отменить заказ, всё равно получит код и выручку.
+        $order = $this->orders->lockById($stale->id);
+
+        if ($order === null || ! $order->status->awaitsDelivery() || $order->delivery !== null) {
+            return DeliveryOutcome::NotDeliverable;
+        }
+
+        if ($order->paymentState?->state !== PaymentProjectionState::Paid) {
+            $this->flagPaymentRevoked($order);
+
+            return DeliveryOutcome::PaymentNotConfirmed;
+        }
+
+        // Результат перехода — это и есть право работать дальше. Отброшенный
+        // результат означал бы выдачу вопреки проигранной гонке.
+        if (! $this->stateMachine->tryTransition($order, OrderStatus::Delivering, reason: 'delivery_started')->changedAnything()) {
+            return DeliveryOutcome::NotDeliverable;
+        }
 
         $key = $this->keys->claimAvailable($order->product_id);
 

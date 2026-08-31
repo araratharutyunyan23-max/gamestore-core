@@ -8,7 +8,6 @@ use App\Domain\Ordering\Enums\OrderStatus;
 use App\Domain\Ordering\Exceptions\IllegalTransition;
 use App\Models\Order;
 use Illuminate\Database\ConnectionInterface;
-use Illuminate\Support\Facades\DB;
 
 /**
  * Единственное место, где меняется статус заказа.
@@ -113,10 +112,5 @@ final readonly class OrderStateMachine
             'trace_id' => $traceId,
             'created_at' => now(),
         ]);
-    }
-
-    public static function default(): self
-    {
-        return new self(DB::connection());
     }
 }

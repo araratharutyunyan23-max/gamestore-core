@@ -105,12 +105,17 @@ final readonly class ApplyPaymentEvent
         }
     }
 
-    private function apply(PaymentEvent $event, Order $order): PaymentEventState
+    private function apply(PaymentEvent $event, Order $stale): PaymentEventState
     {
-        // FOR NO KEY UPDATE, а не FOR UPDATE: вставка дочерних строк берёт на
-        // родителе FOR KEY SHARE, которая конфликтует с FOR UPDATE, но не с
-        // этой блокировкой. FOR UPDATE заставил бы вставки ждать без причины.
-        $this->db->select('SELECT id FROM orders WHERE id = ? FOR NO KEY UPDATE', [$order->id]);
+        // Заказ ПЕРЕЧИТЫВАЕТСЯ под блокировкой, а не берётся из значения,
+        // прочитанного до транзакции. Иначе решение принимается по устаревшему
+        // статусу: заказ, успевший стать delivered, получил бы сторно оплаты
+        // вместо пометки late_payment_failure.
+        $order = $this->orders->lockById($stale->id);
+
+        if ($order === null) {
+            return PaymentEventState::OrderMissing;
+        }
 
         if (! $this->projectPaymentState($event, $order)) {
             // Событие старше уже применённого: отбрасываем, не трогая деньги.

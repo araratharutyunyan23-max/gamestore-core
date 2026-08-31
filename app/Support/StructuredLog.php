@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Support;
 
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -17,16 +18,32 @@ use Illuminate\Support\Str;
  */
 final class StructuredLog
 {
-    private static ?string $traceId = null;
-
+    /**
+     * Идентификатор сквозного пути берётся из Context, а не из статического
+     * свойства класса.
+     *
+     * Статика здесь была прямой ошибкой: воркер очереди живёт до часа и
+     * обрабатывает сотни задач, а статическое свойство между ними не
+     * сбрасывается — первая задача зафиксировала бы ULID, и весь дальнейший
+     * лог писался бы с одним trace_id. Наблюдаемость, ради которой класс и
+     * существует, при этом не работает вовсе.
+     *
+     * Context сбрасывается фреймворком между задачами и переносится в очередь
+     * вместе с задачей, поэтому вебхук и применение платежа связываются
+     * одним идентификатором.
+     */
     public static function traceId(): string
     {
-        return self::$traceId ??= (string) Str::ulid();
-    }
+        $existing = Context::get('trace_id');
 
-    public static function useTraceId(string $traceId): void
-    {
-        self::$traceId = $traceId;
+        if (is_string($existing) && $existing !== '') {
+            return $existing;
+        }
+
+        $traceId = (string) Str::ulid();
+        Context::add('trace_id', $traceId);
+
+        return $traceId;
     }
 
     public static function webhook(string $event, string $eventId, string $orderPublicId): void
