@@ -72,5 +72,11 @@ qa: ## Полный гейт: стиль + статанализ + тесты (т
 demo: ## Сквозной сценарий: заказ -> вебхук -> выдача
 	$(APP) php artisan shop:demo
 
+bulk: ## Сгенерировать 5000 SKU для проверки витрины под объёмом
+	$(APP) php artisan shop:seed-bulk --count=5000
+
 explain: ## EXPLAIN (ANALYZE, BUFFERS) горячего запроса витрины
 	$(APP) php artisan shop:explain-showcase
+
+reconcile: ## Сверка: оплачен но не выдан, выдан но не оплачен, дрейф остатка
+	$(APP) php artisan shop:reconcile --full

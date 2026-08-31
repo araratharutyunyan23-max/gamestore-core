@@ -4,10 +4,15 @@ declare(strict_types=1);
 
 use App\Http\Controllers\CreateOrderController;
 use App\Http\Controllers\PaymentWebhookController;
+use App\Http\Controllers\ShowcaseController;
 use App\Http\Controllers\ShowOrderController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(static function (): void {
+    // Витрина: keyset-пагинация, два запроса на страницу при любом объёме
+    // каталога. Подробности — в ShowcaseRepository.
+    Route::get('/products', ShowcaseController::class);
+
     Route::post('/orders', CreateOrderController::class);
     Route::get('/orders/{publicId}', ShowOrderController::class);
 
