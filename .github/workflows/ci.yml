@@ -1,11 +1,59 @@
 name: CI
 
+# Проверки идут на КАЖДЫЙ пуш в любую ветку, а не только на main и pull request.
+# Иначе ветка лежит непроверенной до момента открытия MR — а ломается код
+# ровно в тот момент, когда его пишут, а не когда его показывают.
 on:
-  push: {branches: [main]}
-  pull_request: {branches: [main]}
+  push:
+  pull_request:
+
+# Когда по ветке уже открыт MR, GitHub присылает и push, и pull_request —
+# без этого прогоны дублировались бы. Плюс новый пуш отменяет предыдущий
+# незавершённый прогон по той же ветке.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  qa:
+  # Отдельным заданием: не нужна ни БД, ни Redis, ни миграции — стартует
+  # мгновенно и параллельно тестам. Раньше медленные тесты ждали стиль.
+  static:
+    name: Стиль и статанализ
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_pgsql, pgsql, redis, intl, bcmath, pcntl, sockets
+          coverage: none
+
+      - name: Кэш зависимостей
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ hashFiles('composer.lock') }}
+
+      - name: Установка зависимостей
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Подготовка окружения
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Стиль кода
+        run: ./vendor/bin/pint --test
+
+      # Гейт проекта: level 9, ignoreErrors пуст, baseline запрещён
+      # (CLAUDE.md §2). Красный статанализ = красный MR.
+      - name: PHPStan level 9
+        run: ./vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+
+  tests:
+    name: Тесты
     runs-on: ubuntu-latest
 
     services:
@@ -15,13 +63,13 @@ jobs:
           POSTGRES_DB: gamestore
           POSTGRES_USER: gamestore
           POSTGRES_PASSWORD: gamestore
-        ports: ["5434:5432"]
+        ports: ['5434:5432']
         options: >-
           --health-cmd "pg_isready -U gamestore" --health-interval 3s
           --health-timeout 3s --health-retries 20
       redis:
         image: redis:7-alpine
-        ports: ["6381:6379"]
+        ports: ['6381:6379']
         options: >-
           --health-cmd "redis-cli ping" --health-interval 3s
           --health-timeout 3s --health-retries 20
@@ -35,30 +83,83 @@ jobs:
           extensions: pdo_pgsql, pgsql, redis, intl, bcmath, pcntl, sockets
           coverage: none
 
-      - name: Install postgres client
-        run: sudo apt-get install -y --no-install-recommends postgresql-client
+      - name: Кэш зависимостей
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ hashFiles('composer.lock') }}
 
-      - name: Install dependencies
+      - name: Установка зависимостей
         run: composer install --prefer-dist --no-interaction --no-progress
 
-      - name: Prepare environment
+      - name: Клиент postgres
+        run: sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Подготовка окружения
         run: |
           cp .env.example .env
           php artisan key:generate
           php artisan migrate --force
-          # Отдельная БД под тесты: набор Race работает без обёрточной транзакции
-          # и truncate'ит таблицы, поэтому в рабочую БД ходить не должен.
+          # Отдельная БД под тесты: набор Race работает без обёрточной
+          # транзакции и truncate'ит таблицы, поэтому в рабочую БД он ходить
+          # не должен.
           PGPASSWORD=gamestore createdb -h 127.0.0.1 -p 5434 -U gamestore gamestore_test
 
-      - name: Code style
-        run: ./vendor/bin/pint --test
+      - name: Модульные и функциональные
+        run: php artisan test --testsuite=Unit,Feature
 
-      # Гейт проекта: level 9, ignoreErrors пуст, baseline запрещён (CLAUDE.md §2)
-      - name: Static analysis (PHPStan level 9)
-        run: ./vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+  # Отдельным заданием намеренно: это доказательство обязательных этапов
+  # задания, и в списке проверок MR оно обязано быть видно отдельной строкой,
+  # а не прятаться внутри общего «тесты прошли».
+  race:
+    name: Состязательные сценарии (критерии приёмки)
+    runs-on: ubuntu-latest
 
-      - name: Tests
-        run: php artisan test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: gamestore
+          POSTGRES_USER: gamestore
+          POSTGRES_PASSWORD: gamestore
+        ports: ['5434:5432']
+        options: >-
+          --health-cmd "pg_isready -U gamestore" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ['6381:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 3s
+          --health-timeout 3s --health-retries 20
 
-      - name: Race scenarios
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_pgsql, pgsql, redis, intl, bcmath, pcntl, sockets
+          coverage: none
+
+      - name: Кэш зависимостей
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ hashFiles('composer.lock') }}
+
+      - name: Установка зависимостей
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Клиент postgres
+        run: sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Подготовка окружения
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan migrate --force
+          PGPASSWORD=gamestore createdb -h 127.0.0.1 -p 5434 -U gamestore gamestore_test
+
+      - name: 50 параллельных вебхуков, гонки, восстановление
         run: php artisan test --testsuite=Race
