@@ -18,11 +18,11 @@ use App\Domain\Delivery\Enums\SupplierName;
  */
 final readonly class RequestId
 {
-    private function __construct(public string $value) {}
+    private function __construct(public string $value, public int $epoch) {}
 
     public static function for(string $orderPublicId, SupplierName $supplier, int $epoch): self
     {
-        return new self(sprintf('req_%s-%s-%d', $orderPublicId, $supplier->value, $epoch));
+        return new self(sprintf('req_%s-%s-%d', $orderPublicId, $supplier->value, $epoch), $epoch);
     }
 
     public function __toString(): string

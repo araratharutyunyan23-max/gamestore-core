@@ -59,14 +59,29 @@ final readonly class ResolveSupplierAttempt
 
         $probe = $gateway->probe($requestId->value);
 
-        StructuredLog::delivery('supplier_probe', $order->public_id, reason: $probe->outcome->value);
+        StructuredLog::supplier(
+            'supplier_probe',
+            $order->public_id,
+            $supplier,
+            $requestId,
+            outcome: $probe->outcome->value,
+            latencyMs: $probe->latencyMs,
+        );
 
         if ($probe->hasCode()) {
             // Код всё-таки был выдан. Забираем его — второй покупать не нужно.
             $this->codes->capture($requestId->value, $supplier, (string) $probe->code);
             $this->attempts->finish($attemptId, AttemptOutcome::Succeeded, $probe->httpStatus, null, $probe->latencyMs, $probe->storeEpoch);
 
-            StructuredLog::delivery('supplier_unknown_resolved', $order->public_id, substr((string) $probe->code, -4));
+            StructuredLog::supplier(
+                'supplier_unknown_resolved',
+                $order->public_id,
+                $supplier,
+                $requestId,
+                outcome: 'issued',
+                latencyMs: $probe->latencyMs,
+                codeLast4: substr((string) $probe->code, -4),
+            );
 
             return [
                 'outcome' => DeliveryOutcome::Delivered,
@@ -88,7 +103,14 @@ final readonly class ResolveSupplierAttempt
         // Шаг 3. not_found или неизвестность — пробуем запечатать.
         $seal = $gateway->seal($requestId->value);
 
-        StructuredLog::delivery('supplier_seal', $order->public_id, reason: $seal->outcome->value);
+        StructuredLog::supplier(
+            'supplier_seal',
+            $order->public_id,
+            $supplier,
+            $requestId,
+            outcome: $seal->outcome->value,
+            latencyMs: $seal->latencyMs,
+        );
 
         if ($seal->hasCode()) {
             // Печать наткнулась на уже выданный код — забираем его.

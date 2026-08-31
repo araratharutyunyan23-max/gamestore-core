@@ -62,6 +62,10 @@ final class ApplyPaymentEventJob implements ShouldQueue
      */
     public function failed(?Throwable $exception): void
     {
-        StructuredLog::webhook('payment_apply_failed', $this->eventId, $exception?->getMessage() ?? '');
+        StructuredLog::webhook(
+            'payment_apply_failed',
+            $this->eventId,
+            reason: $exception?->getMessage() ?? 'unknown',
+        );
     }
 }

@@ -41,14 +41,51 @@ final class MoneyParserTest extends TestCase
     }
 
     #[Test]
-    public function it_refuses_a_float_outright(): void
+    #[DataProvider('exactFloats')]
+    public function it_accepts_a_float_that_exactly_represents_kopecks(float $raw, int $expected): void
     {
-        // Деньги во float недопустимы ни в каком виде: 0.1 + 0.2 != 0.3,
-        // и расхождение всплывёт не здесь, а в сверке через неделю.
-        $this->expectException(UnparsableAmount::class);
-        $this->expectExceptionMessageMatches('/float/');
+        // В JSON нет типа «десятичное»: платёжная система, приславшая
+        // {"amount": 1290.00}, присылает float. Отклонять такое значит
+        // терять реальный платёж — и именно так этот разбор и ошибался.
+        self::assertSame($expected, MoneyParser::majorToMinor($raw));
+    }
 
-        MoneyParser::majorToMinor(500.0);
+    /**
+     * @return array<string, array{float, int}>
+     */
+    public static function exactFloats(): array
+    {
+        return [
+            'целое, записанное с нулями' => [1290.00, 129000],
+            'копейки' => [299.99, 29999],
+            'один знак' => [10.5, 1050],
+            'ноль' => [0.0, 0],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('inexactFloats')]
+    public function it_refuses_a_float_that_lost_precision(float $raw): void
+    {
+        // А вот это уже настоящая потеря точности: 0.1 + 0.2 != 0.3.
+        // Такое значение нельзя честно перевести в копейки, и молча
+        // округлять чужие деньги мы не будем.
+        $this->expectException(UnparsableAmount::class);
+
+        MoneyParser::majorToMinor($raw);
+    }
+
+    /**
+     * @return array<string, array{float}>
+     */
+    public static function inexactFloats(): array
+    {
+        return [
+            'накопленная ошибка сложения' => [0.1 + 0.2],
+            'три знака после запятой' => [1290.005],
+            'не число' => [NAN],
+            'бесконечность' => [INF],
+        ];
     }
 
     #[Test]

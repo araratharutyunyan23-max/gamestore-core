@@ -6,6 +6,7 @@ namespace Tests\Feature\Observability;
 
 use App\Domain\Delivery\Actions\DeliverOrder;
 use App\Domain\Payments\Actions\ApplyPaymentEvent;
+use App\Jobs\ApplyPaymentEventJob;
 use App\Models\Order;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Log\Events\MessageLogged;
@@ -13,6 +14,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Monolog\Formatter\JsonFormatter;
 use PHPUnit\Framework\Attributes\Test;
+use RuntimeException;
 use Tests\Support\OrderFixtures;
 use Tests\TestCase;
 
@@ -116,6 +118,31 @@ final class StructuredLoggingTest extends TestCase
         foreach (['webhook_received', 'payment_applied', 'order_delivered'] as $expected) {
             self::assertContains($expected, $events, "В логе нет события {$expected}.");
         }
+    }
+
+    #[Test]
+    public function a_failure_reason_goes_into_reason_and_never_into_the_order_field(): void
+    {
+        // Регрессия. Текст исключения передавался третьим аргументом, а третий
+        // аргумент — это order_id. Поиск по order_id — основной способ поднять
+        // историю заказа, и такая запись ломала его дважды: упавшее событие
+        // не находилось по своему заказу, а в поле заказа лежал текст ошибки.
+        $order = $this->paidOrder();
+
+        (new ApplyPaymentEventJob('evt_log_'.$order->public_id))
+            ->failed(new RuntimeException('поставщик недоступен'));
+
+        $record = null;
+
+        foreach ($this->captured as $candidate) {
+            if ($candidate['message'] === 'payment_apply_failed') {
+                $record = $candidate;
+            }
+        }
+
+        self::assertNotNull($record, 'Падение задачи не оставило следа в логе.');
+        self::assertSame('поставщик недоступен', $record['context']['reason'] ?? null);
+        self::assertArrayNotHasKey('order_id', $record['context']);
     }
 
     #[Test]

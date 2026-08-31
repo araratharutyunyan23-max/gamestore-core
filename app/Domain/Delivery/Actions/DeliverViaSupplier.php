@@ -69,7 +69,14 @@ final readonly class DeliverViaSupplier
                 return $this->failure(DeliveryOutcome::DeliveryFailed);
             }
 
-            StructuredLog::delivery('supplier_failover', $order->public_id, reason: $supplier->value.'->'.$next->value);
+            StructuredLog::supplier(
+                'supplier_failover',
+                $order->public_id,
+                $supplier,
+                RequestId::for($order->public_id, $supplier, $epoch),
+                outcome: 'exhausted',
+                reason: 'fallback_to:'.$next->value,
+            );
 
             // Новый поставщик — новая эпоха, значит новый request_id. Это
             // законно ровно потому, что отсутствие выдачи у предыдущего
@@ -90,7 +97,7 @@ final readonly class DeliverViaSupplier
         // Шаг 1: намерение фиксируется до вызова и переживает падение процесса.
         $attemptId = $this->attempts->begin($order->id, $supplier, $requestId, $epoch, StructuredLog::traceId());
 
-        StructuredLog::delivery('supplier_call', $order->public_id, reason: $requestId->value);
+        StructuredLog::supplier('supplier_call', $order->public_id, $supplier, $requestId);
 
         // Шаг 2: вызов вне транзакции.
         $response = $gateway->issue(new IssueRequest($requestId->value, $order->sku, $order->public_id));
@@ -108,14 +115,45 @@ final readonly class DeliverViaSupplier
             // в delivery_attempts_request_uq — заказ уже не доведёшь никогда.
             $this->orders->bumpDeliveryEpoch($order->id);
 
-            StructuredLog::delivery('supplier_refused', $order->public_id, reason: $response->errorKind ?? 'unknown');
+            StructuredLog::supplier(
+                'supplier_refused',
+                $order->public_id,
+                $supplier,
+                $requestId,
+                outcome: 'not_issued_certain',
+                latencyMs: $response->latencyMs,
+                reason: $response->errorKind ?? 'unknown',
+            );
 
             return $this->failure(DeliveryOutcome::SupplierExhausted);
         }
 
         // Неизвестность. Судьбу выясняет отдельный сервис: сам факт таймаута
         // не говорит ничего о том, выдан код или нет.
-        StructuredLog::delivery('supplier_unknown', $order->public_id, reason: $response->errorKind ?? 'timeout');
+        // Таймаут выделен отдельным событием не для красоты: это единственный
+        // исход, при котором мы НЕ ЗНАЕМ, выдан код или нет, и по его доле
+        // судят, можно ли вообще доверять поставщику.
+        if ($response->errorKind === null) {
+            StructuredLog::supplier(
+                'supplier_timeout',
+                $order->public_id,
+                $supplier,
+                $requestId,
+                outcome: 'unknown',
+                latencyMs: $response->latencyMs,
+                reason: 'timeout',
+            );
+        } else {
+            StructuredLog::supplier(
+                'supplier_unknown',
+                $order->public_id,
+                $supplier,
+                $requestId,
+                outcome: 'unknown',
+                latencyMs: $response->latencyMs,
+                reason: $response->errorKind,
+            );
+        }
 
         return $this->resolver->resolve($order, $supplier, $requestId, $attemptId);
     }
@@ -136,7 +174,15 @@ final readonly class DeliverViaSupplier
 
         $this->attempts->finish($attemptId, AttemptOutcome::Succeeded, $response->httpStatus, null, $response->latencyMs, $response->storeEpoch);
 
-        StructuredLog::delivery('supplier_issued', $order->public_id, substr((string) $response->code, -4));
+        StructuredLog::supplier(
+            'supplier_issued',
+            $order->public_id,
+            $supplier,
+            $requestId,
+            outcome: 'issued',
+            latencyMs: $response->latencyMs,
+            codeLast4: substr((string) $response->code, -4),
+        );
 
         return [
             'outcome' => DeliveryOutcome::Delivered,

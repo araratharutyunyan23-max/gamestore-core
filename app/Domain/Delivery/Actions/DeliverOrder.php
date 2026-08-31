@@ -85,6 +85,12 @@ final readonly class DeliverOrder
             return DeliveryOutcome::PaymentNotConfirmed;
         }
 
+        // Статус на входе запоминается до захвата аренды: по нему видно, был
+        // ли это обычный путь или доводка уже провалившегося заказа. Иначе
+        // «восстановлен» неотличим от «выдан с первого раза», и по логам
+        // нельзя посчитать, сколько заказов система вытащила сама.
+        $wasStuck = $order->status->isRecoverableDeadEnd();
+
         // Взаимное исключение — аренда, а не статус. По статусу невозможно
         // отличить «я начал выдачу» от «выдачу уже ведёт другой воркер»:
         // переход delivering -> delivering машина состояний не разрешает,
@@ -104,6 +110,11 @@ final readonly class DeliverOrder
             return DeliveryOutcome::AlreadyInProgress;
         }
 
+        // Захват аренды логируется наравне с отказом. Видеть только отказы —
+        // значит не отличить «выдача идёт» от «выдача не начиналась», а это
+        // первый вопрос при разборе застрявшего заказа.
+        StructuredLog::delivery('delivery_lease_acquired', $order->public_id);
+
         // ConnectionInterface::transaction типизирован как mixed, поэтому исход
         // не возвращается из замыкания, а присваивается: наружу mixed не выходит.
         $outcome = DeliveryOutcome::NotDeliverable;
@@ -113,12 +124,22 @@ final readonly class DeliverOrder
             // вызов обязан идти ВНЕ транзакции, поэтому весь путь целиком
             // в transaction() не заворачивается.
             if ($order->product->supply_mode === SupplyMode::Supplier) {
-                return $this->deliverFromSupplier($order);
+                $outcome = $this->deliverFromSupplier($order);
+
+                if ($wasStuck && $outcome === DeliveryOutcome::Delivered) {
+                    StructuredLog::delivery('order_recovered', $order->public_id, reason: 'redelivered_after_failure');
+                }
+
+                return $outcome;
             }
 
             $this->db->transaction(function () use ($order, &$outcome): void {
                 $outcome = $this->deliverFromPool($order);
             });
+
+            if ($wasStuck && $outcome === DeliveryOutcome::Delivered) {
+                StructuredLog::delivery('order_recovered', $order->public_id, reason: 'redelivered_after_failure');
+            }
 
             return $outcome;
         } catch (UniqueConstraintViolationException) {
@@ -169,6 +190,12 @@ final readonly class DeliverOrder
 
             return DeliveryOutcome::OutOfStock;
         }
+
+        // Ключ занят под этот заказ и больше никому не достанется. Событие
+        // отделено от order_delivered намеренно: между ними идёт проводка по
+        // журналу, и если процесс упадёт посередине, по логу будет видно, что
+        // ключ уже израсходован.
+        StructuredLog::delivery('key_reserved', $order->public_id, $key->codeLast4);
 
         $deliveryId = $this->deliveries->recordFromPool($order, $key);
 

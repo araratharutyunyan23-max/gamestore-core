@@ -38,7 +38,7 @@ final readonly class DrainUnappliedPayments
 
         foreach ($eventIds as $eventId) {
             ApplyPaymentEventJob::dispatch($eventId);
-            StructuredLog::webhook('payment_redispatched', $eventId, '');
+            StructuredLog::webhook('payment_redispatched', $eventId);
         }
 
         return count($eventIds);
