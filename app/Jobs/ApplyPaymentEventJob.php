@@ -25,6 +25,9 @@ final class ApplyPaymentEventJob implements ShouldQueue
 
     public int $timeout = 30;
 
+    /** Столько ждём появления заказа, прежде чем пробовать снова. */
+    private const ORDER_MISSING_BACKOFF_SECONDS = 5;
+
     public function __construct(private readonly string $eventId)
     {
         $this->onQueue('payments');
@@ -33,6 +36,15 @@ final class ApplyPaymentEventJob implements ShouldQueue
     public function handle(ApplyPaymentEvent $action, DispatchDelivery $delivery): void
     {
         $state = $action->execute($this->eventId);
+
+        if ($state === PaymentEventState::OrderMissing) {
+            // Заказа ещё нет: вебхук обогнал его создание. Подтверждать задачу
+            // нельзя — она единственная, кто помнит про это событие в очереди.
+            // Возвращаем с задержкой; страховкой служит payments:drain-unapplied.
+            $this->release(self::ORDER_MISSING_BACKOFF_SECONDS);
+
+            return;
+        }
 
         if ($state === PaymentEventState::Applied) {
             // Диспатч выдачи — только после того, как платёж зафиксирован.

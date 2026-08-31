@@ -2,9 +2,16 @@
 
 declare(strict_types=1);
 
-use Illuminate\Foundation\Inspiring;
-use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Schedule;
 
-Artisan::command('inspire', function () {
-    $this->comment(Inspiring::quote());
-})->purpose('Display an inspiring quote');
+/*
+| Восстановление ведётся от ИНБОКСА, а не от статуса заказа: заказ, застрявший
+| из-за потерянной задачи, не виден ни одному статусному фильтру, а событию
+| с applied_at IS NULL — виден.
+|
+| withoutOverlapping обязателен: два одновременных прохода поставили бы каждое
+| событие дважды. Джобы идемпотентны, но лишняя работа под нагрузкой не нужна.
+*/
+Schedule::command('payments:drain-unapplied')
+    ->everyMinute()
+    ->withoutOverlapping();

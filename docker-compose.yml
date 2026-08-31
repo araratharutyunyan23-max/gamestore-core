@@ -4,6 +4,11 @@
 # Заглушки поставщиков (supplier-a / supplier-b / supplier-redis) добавляются
 # на шаге Ш4 — до него `make up` обязан подниматься целиком (docs/PLAN.md).
 
+# Важно: env_file здесь НЕ используется. Laravel сам читает .env как файл, а всё,
+# что попало в окружение процесса, перекрыть уже нельзя — ни из phpunit.xml, ни
+# из .env.testing. Именно так тесты однажды ушли работать по боевой базе.
+# В environment остаётся только то, что действительно отличает контейнер от хоста.
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -45,7 +50,6 @@ services:
       - .:/app
     ports:
       - "8000:8000"
-    env_file: [.env]
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -69,7 +73,6 @@ services:
     command: ["php", "artisan", "queue:work", "redis", "--queue=payments", "--tries=5", "--max-time=3600"]
     volumes:
       - .:/app
-    env_file: [.env]
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -87,7 +90,6 @@ services:
     command: ["php", "artisan", "queue:work", "redis", "--queue=delivery", "--tries=5", "--max-time=3600"]
     volumes:
       - .:/app
-    env_file: [.env]
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -105,7 +107,6 @@ services:
     command: ["php", "artisan", "schedule:work"]
     volumes:
       - .:/app
-    env_file: [.env]
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"

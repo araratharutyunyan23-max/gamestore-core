@@ -8,6 +8,7 @@ use App\Domain\Catalog\Exceptions\ProductNotPurchasable;
 use App\Domain\Catalog\Repositories\ProductRepository;
 use App\Domain\Ordering\DTO\CreateOrderCommand;
 use App\Domain\Ordering\Repositories\OrderRepository;
+use App\Domain\Payments\Actions\DrainUnappliedPayments;
 use App\Models\Order;
 use Illuminate\Database\UniqueConstraintViolationException;
 use RuntimeException;
@@ -25,6 +26,7 @@ final readonly class CreateOrder
     public function __construct(
         private ProductRepository $products,
         private OrderRepository $orders,
+        private DrainUnappliedPayments $drain,
     ) {}
 
     /**
@@ -62,6 +64,11 @@ final readonly class CreateOrder
                 "Order for idempotency key {$command->idempotencyKey} vanished right after creation",
             );
         }
+
+        // Вебхук мог прийти раньше заказа. Усыновление идёт ПОСЛЕ фиксации
+        // заказа, а не внутри транзакции создания: внутри строка ещё не видна
+        // другим соединениям, и воркер, взявший задачу, заказа бы не нашёл.
+        $this->drain->forOrder($order->public_id);
 
         return $order;
     }
