@@ -1,0 +1,116 @@
+# Порты выбраны нестандартными сознательно: на машине разработки 5432/6379/8080
+# уже заняты другими проектами. Наружу торчит только то, что нужно проверяющему.
+#
+# Заглушки поставщиков (supplier-a / supplier-b / supplier-redis) добавляются
+# на шаге Ш4 — до него `make up` обязан подниматься целиком (docs/PLAN.md).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: gamestore
+      POSTGRES_USER: gamestore
+      POSTGRES_PASSWORD: gamestore
+      # C-локаль: детерминированный порядок сортировки, важен для keyset-пагинации
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gamestore -d gamestore"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6381:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    env_file: [.env]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  # Очереди разделены намеренно: медленная выдача не имеет права морить голодом
+  # применение платежей (CLAUDE.md §5.2).
+  worker-payments:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    working_dir: /app
+    command: ["php", "artisan", "queue:work", "redis", "--queue=payments", "--tries=5", "--max-time=3600"]
+    volumes:
+      - .:/app
+    env_file: [.env]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  worker-delivery:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    working_dir: /app
+    command: ["php", "artisan", "queue:work", "redis", "--queue=delivery", "--tries=5", "--max-time=3600"]
+    volumes:
+      - .:/app
+    env_file: [.env]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    working_dir: /app
+    command: ["php", "artisan", "schedule:work"]
+    volumes:
+      - .:/app
+    env_file: [.env]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+volumes:
+  pgdata:
+  redisdata:
