@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push: {branches: [main]}
+  pull_request: {branches: [main]}
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: gamestore_test
+          POSTGRES_USER: gamestore
+          POSTGRES_PASSWORD: gamestore
+        ports: ["5434:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gamestore" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6381:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_pgsql, pgsql, redis, intl, bcmath, pcntl, sockets
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan migrate --force
+
+      - name: Code style
+        run: ./vendor/bin/pint --test
+
+      # Гейт проекта: level 9, ignoreErrors пуст, baseline запрещён (CLAUDE.md §2)
+      - name: Static analysis (PHPStan level 9)
+        run: ./vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+
+      - name: Tests
+        run: php artisan test
+
+      - name: Race scenarios
+        run: php artisan test --testsuite=Race

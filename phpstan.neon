@@ -1,0 +1,46 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+    - vendor/phpstan/phpstan-strict-rules/rules.neon
+    - vendor/phpstan/phpstan-deprecation-rules/rules.neon
+
+parameters:
+    level: 9
+
+    paths:
+        - app
+        - config
+        - database
+        - routes
+        - tests
+
+    # Пустой и должен таким остаться. Ошибка уровня 9 чинится типом, а не глушится.
+    # Каждая запись сюда требует обоснования в ревью. Baseline запрещён (CLAUDE.md §2.1).
+    ignoreErrors: []
+    reportUnmatchedIgnoredErrors: true
+
+    treatPhpDocTypesAsCertain: false
+    checkOctaneCompatibility: false
+
+    # env() только в config/ — иначе конфиг-кэш в проде отдаёт null
+    noEnvCallsOutsideOfConfig: true
+
+    exceptions:
+        implicitThrows: false
+        # Без этого catch (UniqueConstraintViolationException) считается мёртвым,
+        # а он — центральная ветка "уже выдано" (CLAUDE.md §5.6)
+        reportUncheckedExceptionDeadCatch: false
+        check:
+            missingCheckedExceptionInThrows: true
+            tooWideThrowType: true
+        # Checked-исключения отслеживаем ради СВОИХ доменных ошибок (OutOfStock,
+        # SupplierUnknown и т.п.) — они обязаны быть в @throws. Инфраструктурные
+        # исключения фреймворка объявляем unchecked, иначе @throws RuntimeException
+        # расползается по каждой миграции и обесценивает саму проверку.
+        uncheckedExceptionClasses:
+            - LogicException
+            - RuntimeException
+            - InvalidArgumentException
+            - JsonException
+            - Illuminate\Validation\ValidationException
+            - Illuminate\Database\Eloquent\ModelNotFoundException
+            - Illuminate\Http\Client\ConnectionException

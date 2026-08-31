@@ -1,0 +1,205 @@
+# План реализации gamestore-core
+
+Тестовое задание: ядро магазина цифровых товаров (платежи, автовыдача, поставщики, сверка).
+Правила кода — в [CLAUDE.md](../CLAUDE.md). Здесь — что и в каком порядке делаем.
+
+Оценка: **5–6 рабочих дней** до полной сдачи, из них ~2 дня — обязательные этапы 1–2.
+Порядок выбран так, чтобы на любом моменте остановки было что сдать.
+
+---
+
+## Ш0. Каркас (0.5 дня)
+
+- `composer create-project laravel/laravel:^12.0 .`, PHP 8.3, `declare(strict_types=1)` везде.
+- Docker Compose: `app` (php:8.3-fpm-alpine), `nginx`, `postgres:16-alpine` → **5434**,
+  `redis:7-alpine` → **6381**, `worker`, `scheduler`, `supplier-a`, `supplier-b`, `supplier-redis`
+  (`appendonly yes` + volume — иначе рестарт стора ломает идемпотентность поставщика).
+- `phpstan.neon` (level 9, `ignoreErrors: []`), Pint, PHPUnit, `Makefile`, GitHub Actions.
+- **Гейт шага:** `make qa` зелёный на пустом проекте. Дальше level 9 держим постоянно,
+  а не «починим в конце» — иначе это неделя правок.
+
+---
+
+## Ш1. Схема данных (0.75 дня) — этап 1 ТЗ
+
+Одна миграция на таблицу, замороженный текст, без интерполяции PHP-энумов.
+
+**Таблицы:** `products`, `product_stock`, `license_keys`, `orders`, `payment_events`,
+`order_payment_states`, `deliveries`, `delivery_attempts`, `supplier_issued_codes`,
+`ledger_accounts`, `ledger_transactions`, `ledger_entries`, `order_status_transitions`,
+`reconciliation_findings`, `idempotency_keys`.
+
+**Ключевое в схеме** (обоснование — CLAUDE.md §5.1):
+
+- Внешние id (`ord_00123`, `evt_a1b2c3`, `STEAM-TOPUP-500`, `req_...`) — отдельные `text`-колонки
+  с UNIQUE; внутренние PK — `bigint identity`, все FK по ним. Наружу `bigint` не отдаём.
+- `payment_events.order_public_id` **без FK** — событие может прийти раньше заказа.
+- Аренда на `orders`: `lease_token uuid`, `lease_expires_at`, `status_changed_at`, `next_action_at NOT NULL`.
+  Worklist-колонки не nullable, иначе строка мимо эталонного пути станет невидимой для sweeper'а.
+- Триггеры: `orders_no_final_downgrade`, `ensure_stock_row` (AFTER INSERT ON products),
+  `sync_in_stock` (**два** триггера — на INSERT и на UPDATE, `WHEN` с `OLD` на INSERT недопустим),
+  `ledger_assert_balanced` (DEFERRABLE INITIALLY DEFERRED), `license_keys_no_reassign`.
+- Сид: 12 SKU и 50 ключей из ТЗ + генератор 5 000 SKU для этапа 5 (`generate_series`).
+
+**Гейт:** `migrate:fresh --seed` проходит; тест-страж `OrderStatus::values()` == `pg_get_constraintdef`.
+
+---
+
+## Ш2. Ядро API (0.75 дня) — этап 1 ТЗ
+
+- `POST /api/v1/orders` — `Idempotency-Key` обязателен, 422 без него.
+- `GET /api/v1/orders/{public_id}` — та же форма ответа, что у `POST` (перечитываем через
+  `getByPublicIdWithRelations`, один запрос с `with()`).
+- `POST /api/v1/webhooks/payment` — **T1: только `INSERT ... ON CONFLICT DO NOTHING` + 200**.
+  Ноль бизнес-логики в HTTP-запросе. Троттлинг с маршрута снят.
+- `ApplyPaymentEventJob` — применение платежа одной транзакцией: проекция + CAS статуса +
+  проводка `payment_captured` (идемпотентность **по заказу**). Диспатч выдачи — после commit.
+- `OrderStatus` — backed enum с `isFinal()`, `canTransitionTo()`; `OrderStateMachine` с
+  `tryTransition(): TransitionResult` для событийных путей (не бросает) и `transition()` (бросает)
+  для программных ошибок.
+- Автовыдача из пула ключей одним оператором `UPDATE ... FOR UPDATE SKIP LOCKED ... RETURNING`.
+
+**Гейт:** сквозной happy path `created → paid → delivering → delivered`, `make demo` работает.
+
+---
+
+## Ш3. Exactly-once (1 день) — этап 2 ТЗ, **обязательный**
+
+- Аренда с fencing-токеном: `UPDATE orders SET lease_token=..., lease_expires_at=now()+120s
+  WHERE id=? AND (lease_expires_at IS NULL OR lease_expires_at < now())`. Работает только тот,
+  у кого `affected = 1`. **Любая** последующая запись воркера несёт `AND lease_token = :my_token`.
+  Аренда, а не CAS по статусу: из `delivering → delivering` CAS вернёт false и не даст взаимного исключения.
+- `payments:drain-unapplied` в шедулере (раз в минуту) — страховка от потерянного dispatch
+  и от «вебхук раньше заказа».
+- `drainFor($order)` при создании заказа — **после COMMIT**, не внутри транзакции создания.
+- `ApplyPaymentEventJob` при отсутствии заказа делает `release()` с бэкоффом, а **не** подтверждается.
+
+**Гоночная обвязка** (`make race`):
+- уровень 1 — детерминированный тест на двух реальных соединениях PostgreSQL;
+- уровень 2 — 50 параллельных HTTP-вебхуков (`curl --parallel`) против поднятого приложения,
+  `DatabaseTruncation`, ассерты скоуплены по `order_id`;
+- оба варианта: один `event_id` и 50 разных.
+
+**Гейт:** критерии приёмки 1, 2, 3 зелёные и воспроизводятся одной командой.
+
+---
+
+## Ш4. Поставщики и ловушка таймаута (1.25 дня) — этап 3 ТЗ
+
+**Заглушка** (один образ, два контейнера A и B, стор в Redis с AOF):
+
+```
+POST /issue                      claim-before-work → issue, два атомарных Lua-шага
+GET  /issue/{request_id}         issued(+code) | in_flight | not_found | sealed
+POST /issue/{request_id}/seal    CAS: not_found→sealed | in_flight→409 | issued→200+code
+GET  /issues?order_id=           перечень обязательств (recovery и сверка этапа 4)
+PUT  /admin/behavior             детерминированный режим для тестов
+PUT  /admin/stock/{sku}          реальный счётчик остатка
+```
+
+Каждый ответ несёт `X-Store-Epoch`; смена эпохи между issue и probe → `needs_manual_review`,
+замок на fallback не снимается.
+
+**Клиент:** `SupplierGateway` + `HttpSupplierClient` + декораторы `RetryingSupplier`
+(бэкофф с jitter, бюджет < 5 с в процессе, дальше `release()`) и `FailoverSupplier`.
+`lookup()` трёхзначный (`Issued | NotIssued | Unknown`) и **никогда не бросает** —
+`?IssueResult` схлопывает «точно не выдавал» и «не знаю» в один `null`, это та же ловушка
+на уровень глубже. Circuit breaker в Redis — только на `POST /issue` и `replay`.
+
+**Порядок фиксации** — CLAUDE.md §5.2, шаги 3→5→6. `supplier_issued_codes` отделён от
+бизнес-транзакции: исключение в ней не теряет купленный код.
+
+`delivery:resolve-unknown` — шедулер, экспоненциальный опрос **того же поставщика тем же
+`request_id`** до 24 ч, новый `request_id` не создаёт никогда.
+
+**Гейт:** критерии 4, 5, 6 + тесты «probe вернул in_flight → на B не уходим»,
+«воркер убит между POST и записью», «исключение в бизнес-транзакции → код уцелел».
+
+---
+
+## Ш5. Сверка, журнал, восстановление (1 день) — этап 4 ТЗ, бонус
+
+- **Журнал:** 6 счетов (`gateway_receivable`, `customer_prepayment`, `suspense_unapplied`,
+  `customer_receivable`, `revenue`, `cogs`). Возвраты/payout/комиссии — раздел README
+  «как расширяется», без кода: их присутствие в журнале без соответствующего статуса заказа
+  само порождает баг.
+- **Проекции** `ledger_open_items` и `ledger_account_balances`, поддерживаемые обычным
+  AFTER INSERT триггером. Тогда сверка стоит O(аномалий), а не O(истории), и trial balance —
+  это `SELECT` из таблицы, а не `SUM` по всей книге раз в минуту.
+- **`GET /ops/reconciliation`** (токен из конфига) + `php artisan shop:reconcile [--full]`.
+  Классы аномалий: `unapplied_payment`, `order_missing`, `paid_not_delivered`, `delivered_not_paid`,
+  `ledger_unbalanced`, `attempt_unknown`, `amount_mismatch`, `stock_drift`, `duplicate_code`.
+  `awaiting_restock` — **warning, не critical**, иначе критерий №6 делает систему вечно «нездоровой».
+  Возраст открытой позиции считается **после** агрегации (`HAVING ... AND min(created_at) < ...`),
+  а не фильтром по строкам — иначе каждый нормальный заказ помечается аномалией.
+  Пер-заказные счётчики — через CTE с `GROUP BY`, без декартова размножения на трёх `LEFT JOIN`.
+- **Sweeper** берёт работу из аномалий (`unapplied_payment`, `paid_not_delivered`, `attempt_unknown`),
+  а не из списка статусов; тем же CAS-захватом аренды, что и основной путь.
+- Структурные логи, `/health`, `/metrics`, 4 алерта.
+
+**Гейт:** подброшенная аномалия ловится; нетранзакционный тест реально ловит отложенный триггер.
+
+---
+
+## Ш6. Каталог под нагрузкой (0.5 дня) — этап 5 ТЗ, бонус
+
+- Горячий запрос витрины — **без join к `product_stock`**:
+  ```sql
+  SELECT p.id, p.sku, p.title, p.price_minor, p.currency
+  FROM products p
+  WHERE p.is_active AND p.in_stock AND p.type = :type
+    AND (p.price_minor, p.id) > (:cursor_price, :cursor_id)   -- keyset, не OFFSET
+  ORDER BY p.price_minor, p.id LIMIT 25;
+  ```
+  Точные остатки — вторым запросом `WHERE product_id = ANY(:ids)`. Итого 2 запроса на страницу.
+- Покрывающий индекс `products_showcase_cov_idx (type, price_minor, id) INCLUDE (sku, title, currency)
+  WHERE is_active AND in_stock` → Index Only Scan, `Heap Fetches: 0`.
+- Индексов на `products` — минимум. Флаг `in_stock` стоит в предикате индекса, поэтому каждое
+  его переключение — non-HOT update (замерено: 0.0% HOT, 38 183 dead tuple на 37 884 флипа).
+  Лишний индекс умножает цену каждой продажи.
+- README: `EXPLAIN (ANALYZE, BUFFERS)` на 5 000 SKU, разбор строк плана, честная граница схемы
+  (глубокий пул vs дефицитные позиции), раздел «куда расти» с метрикой-триггером:
+  шардирование счётчика, matview, партиционирование.
+
+**Гейт:** тест проверяет план (`Node Type === 'Index Only Scan'`, `Shared Hit+Read <= 16`),
+а не только время ответа.
+
+---
+
+## Ш7. Сдача (0.5 дня)
+
+README: запуск, прогон тестов, **как воспроизвести гонки и отказ поставщика**, таблица
+«критерий приёмки → имя теста → имя индекса, который его гарантирует», записка о ключевых
+решениях, зафиксированные допущения (CLAUDE.md §10), фактическое время.
+
+---
+
+## Что режем, если времени меньше
+
+По убыванию: Rector в CI → property-based тест журнала (заменить 5 табличными кейсами) →
+контексты `Catalog`/`Reconciliation` свернуть до сервиса + репозитория без DTO-слоя →
+race-набор до двух сценариев → `/metrics`.
+
+**Не режем никогда:** unique-индексы, `supplier_issued_codes`, трёхзначный `lookup`,
+детерминированный `request_id`, тесты по 6 критериям приёмки.
+
+---
+
+## Приложение: откуда взялись эти решения
+
+План собран не «по памяти»: пять измерений (схема/exactly-once, ловушка таймаута,
+журнал/сверка, каталог, скелет) прорабатывались параллельно, каждое затем атаковалось
+отдельным состязательным ревьюером. Найдено 76 дыр, из них 20 критических; часть
+воспроизведена на живом PostgreSQL 16. Самые дорогие находки, уже учтённые выше:
+
+1. Поздний `failed` между `paid` и стартом доставки отдавал товар бесплатно и молча —
+   доставка теперь читает проекцию платежа.
+2. Идемпотентность по `event_id` вместо заказа ломала журнал ровно на приёмочном сценарии №1
+   (50 вебхуков с *разными* `event_id`).
+3. `probe 404` не авторитетен: GET гонялся с ещё живым POST'ом → второй код. Отсюда `seal`.
+4. Два указателя «ключ ↔ доставка» + sweeper, чистящий одну сторону, вешали **весь SKU**
+   при живом остатке.
+5. `CHECK (available_count >= 0)` превращал дрейф счётчика в исключение на пути восстановления
+   и валил критерий №6.
+6. `dispatch` по факту вставки терял платёж навсегда при падении между COMMIT и dispatch.
+7. Код от поставщика персистился внутри бизнес-транзакции — любое исключение теряло его насовсем.

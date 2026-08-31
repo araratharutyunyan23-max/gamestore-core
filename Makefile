@@ -1,0 +1,60 @@
+SHELL := /bin/bash
+DC    := docker compose
+APP   := $(DC) exec -T app
+
+.DEFAULT_GOAL := help
+
+.PHONY: help up down restart logs shell migrate fresh seed test race qa stan pint demo explain
+
+help: ## Показать доступные цели
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+up: ## Поднять окружение (app:8000, pg:5434, redis:6381)
+	@test -f .env || cp .env.example .env
+	$(DC) up -d --build
+	@$(APP) php artisan migrate --force
+
+down: ## Остановить и удалить контейнеры
+	$(DC) down
+
+restart: ## Перезапустить
+	$(DC) restart
+
+logs: ## Логи приложения и воркеров
+	$(DC) logs -f app worker-payments worker-delivery
+
+shell: ## Шелл внутри app
+	$(DC) exec app sh
+
+migrate: ## Применить миграции
+	$(APP) php artisan migrate --force
+
+fresh: ## Пересоздать схему и залить сид (12 SKU + 50 ключей из ТЗ)
+	$(APP) php artisan migrate:fresh --seed --force
+
+seed: ## Только сид
+	$(APP) php artisan db:seed --force
+
+test: ## Весь набор тестов
+	$(APP) php artisan test
+
+race: ## Только состязательные сценарии (критерии приёмки 1-6)
+	$(APP) php artisan test --testsuite=Race
+
+stan: ## PHPStan level 9
+	$(APP) ./vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+
+pint: ## Форматирование
+	$(APP) ./vendor/bin/pint
+
+qa: ## Полный гейт: стиль + статанализ + тесты (то же гоняет CI)
+	$(APP) ./vendor/bin/pint --test
+	$(APP) ./vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+	$(APP) php artisan test
+
+demo: ## Сквозной сценарий: заказ -> вебхук -> выдача
+	$(APP) php artisan shop:demo
+
+explain: ## EXPLAIN (ANALYZE, BUFFERS) горячего запроса витрины
+	$(APP) php artisan shop:explain-showcase
