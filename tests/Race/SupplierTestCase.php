@@ -118,6 +118,9 @@ abstract class SupplierTestCase extends TestCase
                 [
                     'SUPPLIER_NAME' => $name,
                     'SUPPLIER_REDIS_HOST' => config()->string('database.redis.default.host'),
+                    // В конфиге порт лежит строкой (env() возвращает строку), поэтому
+                    // integer() здесь неуместен — берём как есть.
+                    'SUPPLIER_REDIS_PORT' => (string) config()->string('database.redis.default.port'),
                     'SUPPLIER_ERROR_RATE' => '0',
                     'SUPPLIER_TIMEOUT_RATE' => '0',
                     // Заглушка при проверке таймаутов спит по 30 секунд;

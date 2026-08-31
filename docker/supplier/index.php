@@ -24,7 +24,13 @@ declare(strict_types=1);
  * на ровном месте.
  */
 $redis = new Redis;
-$redis->connect((string) (getenv('SUPPLIER_REDIS_HOST') ?: 'supplier-redis'), 6379);
+// Порт берётся из окружения, а не зашивается: в docker-сети Redis слушает
+// стандартный 6379, а в CI это сервисный контейнер, опубликованный на другом
+// порту. Захардкоженный порт давал зелёный прогон локально и красный в CI.
+$redis->connect(
+    (string) (getenv('SUPPLIER_REDIS_HOST') ?: 'supplier-redis'),
+    (int) (getenv('SUPPLIER_REDIS_PORT') ?: 6379),
+);
 
 $name = (string) (getenv('SUPPLIER_NAME') ?: 'A');
 $prefix = "sup:{$name}:";

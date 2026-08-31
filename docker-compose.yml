@@ -138,6 +138,7 @@ services:
     environment:
       SUPPLIER_NAME: A
       SUPPLIER_REDIS_HOST: supplier-redis
+      SUPPLIER_REDIS_PORT: "6379"
       # Доли сбоев из задания — поведение по умолчанию для демонстрации.
       # Тесты задают режим предписанно, потому что тест на вероятности —
       # это не тест.
@@ -154,6 +155,7 @@ services:
     environment:
       SUPPLIER_NAME: B
       SUPPLIER_REDIS_HOST: supplier-redis
+      SUPPLIER_REDIS_PORT: "6379"
       SUPPLIER_ERROR_RATE: "0"
       SUPPLIER_TIMEOUT_RATE: "0"
     depends_on:
