@@ -25,3 +25,6 @@ Thumbs.db
 /.nova
 /.zed
 .phpactor.json
+
+# локальные секреты, в git не попадают никогда
+.secrets/
