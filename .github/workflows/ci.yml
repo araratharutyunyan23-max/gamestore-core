@@ -12,7 +12,7 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: gamestore_test
+          POSTGRES_DB: gamestore
           POSTGRES_USER: gamestore
           POSTGRES_PASSWORD: gamestore
         ports: ["5434:5432"]
@@ -35,6 +35,9 @@ jobs:
           extensions: pdo_pgsql, pgsql, redis, intl, bcmath, pcntl, sockets
           coverage: none
 
+      - name: Install postgres client
+        run: sudo apt-get install -y --no-install-recommends postgresql-client
+
       - name: Install dependencies
         run: composer install --prefer-dist --no-interaction --no-progress
 
@@ -43,6 +46,9 @@ jobs:
           cp .env.example .env
           php artisan key:generate
           php artisan migrate --force
+          # Отдельная БД под тесты: набор Race работает без обёрточной транзакции
+          # и truncate'ит таблицы, поэтому в рабочую БД ходить не должен.
+          PGPASSWORD=gamestore createdb -h 127.0.0.1 -p 5434 -U gamestore gamestore_test
 
       - name: Code style
         run: ./vendor/bin/pint --test

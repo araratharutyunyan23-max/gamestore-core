@@ -17,6 +17,9 @@ enum DeliveryOutcome: string
     case AlreadyDelivered = 'already_delivered';
     case OutOfStock = 'out_of_stock';
 
+    /** Аренду держит другой воркер — выходим тихо, это не ошибка. */
+    case AlreadyInProgress = 'already_in_progress';
+
     /** Оплата отозвана до начала выдачи — товар отдавать нельзя. */
     case PaymentNotConfirmed = 'payment_not_confirmed';
 

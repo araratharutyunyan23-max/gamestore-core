@@ -15,6 +15,7 @@ use App\Models\PaymentEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\Support\OrderFixtures;
 use Tests\TestCase;
@@ -45,27 +46,52 @@ final class StaleReadRegressionTest extends TestCase
     }
 
     #[Test]
-    public function an_order_already_being_delivered_is_not_delivered_a_second_time(): void
+    public function a_worker_holding_the_lease_keeps_everyone_else_out(): void
     {
         $order = $this->paidOrder();
 
-        // Воркер начал выдачу и упал, не закончив: заказ остался в delivering.
-        // Внешняя проверка это пропускает — delivering входит в множество
-        // ожидающих выдачи, — и раньше второй воркер спокойно шёл дальше,
-        // забирал ключ и выдавал его повторно.
+        // Другой воркер уже взял аренду и ведёт выдачу прямо сейчас.
         DB::table('orders')->where('id', $order->id)->update([
             'status' => OrderStatus::Delivering->value,
-            'status_changed_at' => now(),
+            'lease_token' => (string) Str::uuid(),
+            'lease_owner' => 'other-worker',
+            'lease_expires_at' => now()->addMinutes(2),
         ]);
 
         $outcome = app(DeliverOrder::class)->execute($order->public_id);
 
-        // Теперь право работать даёт РЕЗУЛЬТАТ перехода: delivering -> delivering
-        // машина состояний не разрешает, значит выдачу ведёт кто-то другой.
-        self::assertSame(DeliveryOutcome::NotDeliverable, $outcome);
+        // Взаимное исключение даёт аренда. По статусу это отличить нельзя:
+        // переход delivering -> delivering запрещён и в случае «выдачу ведёт
+        // другой», и в случае «предыдущий воркер упал».
+        self::assertSame(DeliveryOutcome::AlreadyInProgress, $outcome);
         self::assertSame(0, DB::table('deliveries')->where('order_id', $order->id)->count());
         self::assertSame(0, DB::table('license_keys')->whereNotNull('delivery_id')->count());
-        self::assertSame(0, DB::table('ledger_transactions')->where('kind', 'order_delivered')->count());
+    }
+
+    #[Test]
+    public function an_expired_lease_lets_the_order_be_recovered(): void
+    {
+        $order = $this->paidOrder();
+
+        // Воркер упал во время выдачи: статус остался delivering, аренда протухла.
+        DB::table('orders')->where('id', $order->id)->update([
+            'status' => OrderStatus::Delivering->value,
+            'lease_token' => (string) Str::uuid(),
+            'lease_owner' => 'dead-worker',
+            'lease_expires_at' => now()->subMinute(),
+        ]);
+
+        $outcome = app(DeliverOrder::class)->execute($order->public_id);
+
+        // Живучесть: без перехвата протухшей аренды заказ завис бы навсегда —
+        // статус промежуточный, задачи нет, и ни один статусный фильтр его
+        // уже не увидит.
+        self::assertSame(DeliveryOutcome::Delivered, $outcome);
+        self::assertSame(1, DB::table('deliveries')->where('order_id', $order->id)->count());
+        self::assertSame(OrderStatus::Delivered, $order->refresh()->status);
+
+        // Аренда снята: заказ не остаётся заблокированным после успеха.
+        self::assertNull(DB::table('orders')->where('id', $order->id)->value('lease_token'));
     }
 
     #[Test]

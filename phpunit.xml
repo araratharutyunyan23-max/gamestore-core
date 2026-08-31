@@ -30,24 +30,33 @@
             <directory>app</directory>
         </include>
     </source>
+    <!--
+        force="true" на каждой переменной обязателен.
+
+        В контейнере .env подключается через env_file и попадает в РЕАЛЬНОЕ
+        окружение процесса. PHPUnit без force существующие переменные не
+        перекрывает — и тесты молча уходят работать по боевой базе с боевой
+        очередью. Обнаружено ровно так: задачи уходили в Redis и в тестах
+        не исполнялись, а RefreshDatabase пересоздавал рабочую БД.
+    -->
     <php>
-        <env name="APP_ENV" value="testing"/>
-        <env name="APP_MAINTENANCE_DRIVER" value="file"/>
-        <env name="BCRYPT_ROUNDS" value="4"/>
-        <env name="BROADCAST_CONNECTION" value="null"/>
-        <env name="CACHE_STORE" value="array"/>
+        <env name="APP_ENV" value="testing" force="true"/>
+        <env name="APP_MAINTENANCE_DRIVER" value="file" force="true"/>
+        <env name="BCRYPT_ROUNDS" value="4" force="true"/>
+        <env name="BROADCAST_CONNECTION" value="null" force="true"/>
+        <env name="CACHE_STORE" value="array" force="true"/>
         <!--
             PostgreSQL, а не sqlite: несущие элементы схемы (SKIP LOCKED,
             partial unique, отложенные constraint-триггеры, advisory-локи)
             в sqlite отсутствуют, и тест на sqlite доказывал бы не то.
         -->
-        <env name="DB_CONNECTION" value="pgsql"/>
-        <env name="DB_DATABASE" value="gamestore_test"/>
-        <env name="DB_URL" value=""/>
-        <env name="MAIL_MAILER" value="array"/>
-        <env name="QUEUE_CONNECTION" value="sync"/>
-        <env name="SESSION_DRIVER" value="array"/>
-        <env name="RACE_BARRIER" value="true"/>
-        <env name="SUPPLIER_ALLOW_COMPENSATED_FALLBACK" value="false"/>
+        <env name="DB_CONNECTION" value="pgsql" force="true"/>
+        <env name="DB_DATABASE" value="gamestore_test" force="true"/>
+        <env name="DB_URL" value="" force="true"/>
+        <env name="MAIL_MAILER" value="array" force="true"/>
+        <env name="QUEUE_CONNECTION" value="sync" force="true"/>
+        <env name="SESSION_DRIVER" value="array" force="true"/>
+        <env name="RACE_BARRIER" value="true" force="true"/>
+        <env name="SUPPLIER_ALLOW_COMPENSATED_FALLBACK" value="false" force="true"/>
     </php>
 </phpunit>

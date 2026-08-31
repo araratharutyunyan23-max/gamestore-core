@@ -17,9 +17,11 @@ use App\Domain\Ordering\Repositories\OrderRepository;
 use App\Domain\Ordering\StateMachine\OrderStateMachine;
 use App\Domain\Payments\Enums\PaymentProjectionState;
 use App\Models\Order;
+use App\Support\Cfg;
 use App\Support\StructuredLog;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\UniqueConstraintViolationException;
+use Illuminate\Support\Str;
 
 /**
  * Выдача товара из собственного пула ключей.
@@ -79,6 +81,25 @@ final readonly class DeliverOrder
             return DeliveryOutcome::SupplierNotImplemented;
         }
 
+        // Взаимное исключение — аренда, а не статус. По статусу невозможно
+        // отличить «я начал выдачу» от «выдачу уже ведёт другой воркер»:
+        // переход delivering -> delivering машина состояний не разрешает,
+        // и CAS вернул бы false в обоих случаях.
+        $lease = $this->orders->acquireDeliveryLease(
+            $order->id,
+            // UUID, а не ULID: колонка lease_token объявлена как uuid,
+            // и тип в схеме первичен по отношению к предпочтениям в коде.
+            (string) Str::uuid(),
+            Cfg::leaseSeconds(),
+            gethostname().':'.getmypid(),
+        );
+
+        if ($lease === null) {
+            StructuredLog::delivery('delivery_lease_denied', $order->public_id);
+
+            return DeliveryOutcome::AlreadyInProgress;
+        }
+
         // ConnectionInterface::transaction типизирован как mixed, поэтому исход
         // не возвращается из замыкания, а присваивается: наружу mixed не выходит.
         $outcome = DeliveryOutcome::NotDeliverable;
@@ -95,6 +116,10 @@ final readonly class DeliverOrder
             StructuredLog::delivery('delivery_duplicate_prevented', $order->public_id);
 
             return DeliveryOutcome::AlreadyDelivered;
+        } finally {
+            // Аренда снимается всегда: иначе упавшая выдача держала бы заказ
+            // до истечения таймаута вместо немедленного повтора.
+            $this->orders->releaseDeliveryLease($lease);
         }
     }
 
@@ -115,9 +140,11 @@ final readonly class DeliverOrder
             return DeliveryOutcome::PaymentNotConfirmed;
         }
 
-        // Результат перехода — это и есть право работать дальше. Отброшенный
-        // результат означал бы выдачу вопреки проигранной гонке.
-        if (! $this->stateMachine->tryTransition($order, OrderStatus::Delivering, reason: 'delivery_started')->changedAnything()) {
+        // Заказ уже в delivering означает, что предыдущий воркер упал, не
+        // закончив: его аренда протухла и досталась нам. Переход не нужен —
+        // статус уже правильный, а исключительность даёт аренда.
+        if ($order->status !== OrderStatus::Delivering
+            && ! $this->stateMachine->tryTransition($order, OrderStatus::Delivering, reason: 'delivery_started')->changedAnything()) {
             return DeliveryOutcome::NotDeliverable;
         }
 

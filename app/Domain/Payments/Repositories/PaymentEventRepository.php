@@ -80,6 +80,49 @@ final readonly class PaymentEventRepository
             ]);
     }
 
+    /**
+     * Неприменённые события старше порога — worklist восстановления.
+     *
+     * Истина о том, что нужно доделать, живёт в ИНБОКСЕ, а не в статусе заказа.
+     * Заказ, застрявший в created из-за потерянной задачи, не виден ни одному
+     * статусному фильтру, а строке с applied_at IS NULL — виден. Выборка идёт
+     * по частичному индексу payment_events_unapplied_idx, который покрывает
+     * ровно незавершённые строки и не растёт вместе с историей.
+     *
+     * @return list<string> идентификаторы событий
+     */
+    public function unappliedEventIdsOlderThan(int $seconds, int $limit): array
+    {
+        /** @var list<string> $ids */
+        $ids = PaymentEvent::query()
+            ->whereNull('applied_at')
+            ->where('received_at', '<=', now()->subSeconds($seconds))
+            ->orderBy('received_at')
+            ->limit($limit)
+            ->pluck('event_id')
+            ->all();
+
+        return $ids;
+    }
+
+    /**
+     * Осиротевшие события конкретного заказа — вебхук, обогнавший создание.
+     *
+     * @return list<string>
+     */
+    public function unappliedEventIdsForOrder(string $orderPublicId): array
+    {
+        /** @var list<string> $ids */
+        $ids = PaymentEvent::query()
+            ->whereNull('applied_at')
+            ->where('order_public_id', $orderPublicId)
+            ->orderBy('occurred_at')
+            ->pluck('event_id')
+            ->all();
+
+        return $ids;
+    }
+
     public function fingerprintMatches(string $eventId, string $fingerprint): bool
     {
         return PaymentEvent::query()
