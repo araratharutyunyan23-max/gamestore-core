@@ -14,6 +14,12 @@ up: ## Поднять окружение (app:8000, pg:5434, redis:6381)
 	@test -f .env || cp .env.example .env
 	$(DC) up -d --build
 	@$(APP) php artisan migrate --force
+	@# Отдельная БД под тесты: набор Race работает без обёрточной транзакции
+	@# и TRUNCATE'ит таблицы, поэтому в рабочую БД он ходить не должен.
+	@$(DC) exec -T postgres psql -U gamestore -d gamestore -tc \
+		"SELECT 1 FROM pg_database WHERE datname='gamestore_test'" | grep -q 1 \
+		|| $(DC) exec -T postgres createdb -U gamestore gamestore_test
+	@echo "готово: http://localhost:8000"
 
 down: ## Остановить и удалить контейнеры
 	$(DC) down
