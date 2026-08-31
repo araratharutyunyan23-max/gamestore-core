@@ -12,6 +12,7 @@ use App\Domain\Delivery\Enums\SupplierName;
 use App\Domain\Delivery\Repositories\DeliveryAttemptRepository;
 use App\Domain\Delivery\Repositories\SupplierCodeRepository;
 use App\Domain\Delivery\Suppliers\SupplierRegistry;
+use App\Domain\Ordering\Repositories\OrderRepository;
 use App\Models\Order;
 use App\Support\Cfg;
 use App\Support\StructuredLog;
@@ -43,6 +44,7 @@ final readonly class ResolveSupplierAttempt
         private SupplierRegistry $suppliers,
         private DeliveryAttemptRepository $attempts,
         private SupplierCodeRepository $codes,
+        private OrderRepository $orders,
     ) {}
 
     /**
@@ -104,6 +106,10 @@ final readonly class ResolveSupplierAttempt
         if ($seal->outcome === CallOutcome::Sealed) {
             // Доказано: код по этому request_id не появится никогда.
             $this->attempts->finish($attemptId, AttemptOutcome::Sealed, $seal->httpStatus, 'sealed', $seal->latencyMs, $seal->storeEpoch);
+
+            // Печать — доказательство отсутствия выдачи, значит эпоху двигать
+            // можно и нужно: следующий request_id обязан быть другим.
+            $this->orders->bumpDeliveryEpoch($order->id);
 
             return $this->exhausted();
         }

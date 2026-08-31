@@ -125,7 +125,7 @@ curl -X PUT $B/admin/stock/STEAM-TOPUP-500 -d '{"qty":5}'
 | 6 | Пустой остаток → восстановимо, без падения | `PoolDeliveryTest` | `GREATEST(count - 1, 0)` вместо `CHECK` как ворот |
 
 ```
-157 тестов / 637 проверок    PHPStan level 9, ignoreErrors пуст, baseline запрещён
+165 тестов / 680 проверок    PHPStan level 9, ignoreErrors пуст, baseline запрещён
 ```
 
 ### Витрина под объёмом

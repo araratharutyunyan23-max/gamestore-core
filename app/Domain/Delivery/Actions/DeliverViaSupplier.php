@@ -14,6 +14,7 @@ use App\Domain\Delivery\Enums\SupplierName;
 use App\Domain\Delivery\Repositories\DeliveryAttemptRepository;
 use App\Domain\Delivery\Repositories\SupplierCodeRepository;
 use App\Domain\Delivery\Suppliers\SupplierRegistry;
+use App\Domain\Ordering\Repositories\OrderRepository;
 use App\Models\Order;
 use App\Support\Cfg;
 use App\Support\StructuredLog;
@@ -44,6 +45,7 @@ final readonly class DeliverViaSupplier
         private DeliveryAttemptRepository $attempts,
         private SupplierCodeRepository $codes,
         private ResolveSupplierAttempt $resolver,
+        private OrderRepository $orders,
     ) {}
 
     /**
@@ -100,6 +102,12 @@ final readonly class DeliverViaSupplier
         if ($response->outcome === CallOutcome::NotIssuedCertain) {
             // Доказанный отказ — только он открывает путь ко второму поставщику.
             $this->attempts->finish($attemptId, AttemptOutcome::Failed, $response->httpStatus, $response->errorKind, $response->latencyMs, $response->storeEpoch);
+
+            // Эпоха ПЕРСИСТИТСЯ, а не живёт в памяти. Иначе повторная выдача
+            // после восстановимого отказа пойдёт с тем же request_id и упрётся
+            // в delivery_attempts_request_uq — заказ уже не доведёшь никогда.
+            $this->orders->bumpDeliveryEpoch($order->id);
+
             StructuredLog::delivery('supplier_refused', $order->public_id, reason: $response->errorKind ?? 'unknown');
 
             return $this->failure(DeliveryOutcome::SupplierExhausted);
