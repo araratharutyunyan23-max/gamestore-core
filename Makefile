@@ -28,8 +28,14 @@ up: ## Поднять окружение с нуля: зависимости, с
 		"SELECT 1 FROM pg_database WHERE datname='gamestore_test'" | grep -q 1 \
 		|| $(DC) exec -T postgres createdb -U gamestore gamestore_test
 	@$(APP) php artisan db:seed --force
+	@# Первая сверка сразу: /health меряет её возраст, и без этого шага свежее
+	@# окружение минуту отвечает 503 — то есть выглядит сломанным ровно тогда,
+	@# когда оно исправно. Заодно засеянное состояние проверено, а не принято
+	@# на веру.
+	@$(APP) php artisan shop:reconcile >/dev/null
 	@echo ""
 	@echo "готово: http://localhost:8000 — каталог засеян, можно make demo"
+	@echo "документация API: http://localhost:8000/docs   живость: http://localhost:8000/health"
 
 down: ## Остановить и удалить контейнеры
 	$(DC) down
