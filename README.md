@@ -142,6 +142,7 @@ curl -X PUT $B/admin/stock/STEAM-TOPUP-500 -d '{"qty":5}'
 | 4 | Таймаут поставщика, который выдал код | `TimeoutTrapTest` | `delivery_attempts_one_open_uq`, детерминированный `request_id` |
 | 5 | A недоступен → fallback на B → один раз | `TimeoutTrapTest` (3 сценария) | `delivery_attempts_one_success_uq` |
 | 6 | Пустой остаток → восстановимо, без падения | `PoolDeliveryTest` | `GREATEST(count - 1, 0)` вместо `CHECK` как ворот |
+| — | Журнал не сходится → коммит отбит | `DeferredLedgerTriggerTest` | `CONSTRAINT TRIGGER ... INITIALLY DEFERRED` |
 
 ```
 170 тестов / 695 проверок    PHPStan level 9, ignoreErrors пуст, baseline запрещён
