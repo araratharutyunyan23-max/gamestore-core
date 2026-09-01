@@ -14,7 +14,7 @@
 Нужен только Docker. Проверено с чистого клона.
 
 ```bash
-git clone git@github.com:araratharutyunyan23-max/gamestore-core.git && cd gamestore-core
+git clone https://github.com/araratharutyunyan23-max/gamestore-core.git && cd gamestore-core
 
 make up      # зависимости, схема, отдельная БД под тесты, сид (12 SKU и 50 ключей из задания)
 make demo    # сквозной сценарий: заказ → вебхук оплаты → выданный код
@@ -40,13 +40,12 @@ make qa      # стиль + PHPStan level 9 + все тесты
 
 ## API
 
-**Документация:** [OpenAPI 3.1](docs/openapi.yaml) — открывается как читаемая
-страница двумя способами:
+**Документация: <https://araratharutyunyan23-max.github.io/gamestore-core/>**
+— открывается в браузере, ничего запускать не нужно.
 
-- локально после `make up`: **<http://localhost:8000/docs>** (Redoc, спецификация
-  отдаётся тем же приложением — не может случиться, что развёрнута одна версия,
-  а описана другая);
-- без запуска проекта: [посмотреть онлайн](https://redocly.github.io/redoc/?url=https://raw.githubusercontent.com/araratharutyunyan23-max/gamestore-core/main/docs/openapi.yaml).
+Тот же [OpenAPI 3.1](docs/openapi.yaml) доступен и локально после `make up`:
+**<http://localhost:8000/docs>**. Там спецификация отдаётся тем же приложением,
+поэтому не может случиться, что развёрнута одна версия, а описана другая.
 
 Спецификация сверяется с кодом тестом `OpenApiSpecTest`: каждый публичный
 маршрут обязан быть описан, описанных несуществующих маршрутов быть не должно,
