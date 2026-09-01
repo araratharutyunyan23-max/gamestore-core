@@ -42,10 +42,12 @@ make qa      # стиль + PHPStan level 9 + все тесты
 
 **Документация: <https://araratharutyunyan23-max.github.io/gamestore-core/>**
 — открывается в браузере, ничего запускать не нужно.
+[Зеркало без GitHub Pages](https://redocly.github.io/redoc/?url=https://raw.githubusercontent.com/araratharutyunyan23-max/gamestore-core/main/docs/openapi.yaml),
+исходник — [docs/openapi.yaml](docs/openapi.yaml).
 
-Тот же [OpenAPI 3.1](docs/openapi.yaml) доступен и локально после `make up`:
-**<http://localhost:8000/docs>**. Там спецификация отдаётся тем же приложением,
-поэтому не может случиться, что развёрнута одна версия, а описана другая.
+Тот же контракт доступен и локально после `make up`: **<http://localhost:8000/docs>**.
+Там спецификация отдаётся тем же приложением, поэтому не может случиться, что
+развёрнута одна версия, а описана другая.
 
 Спецификация сверяется с кодом тестом `OpenApiSpecTest`: каждый публичный
 маршрут обязан быть описан, описанных несуществующих маршрутов быть не должно,
