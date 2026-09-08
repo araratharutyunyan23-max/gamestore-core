@@ -23,6 +23,16 @@ final readonly class SupplierResponse
         public ?string $errorKind = null,
         public ?string $storeEpoch = null,
         public int $latencyMs = 0,
+        /**
+         * Товар, по которому поставщик ОБЪЯВИЛ выдачу.
+         *
+         * Именно объявил: проверить сам код мы не можем — что открывает
+         * чужая строка символов, снаружи не узнать. Но сверить заявленный
+         * товар с запрошенным можем, и этого достаточно, чтобы поймать
+         * подмену, сделанную не со зла, а по ошибке маршрутизации у
+         * поставщика.
+         */
+        public ?string $sku = null,
     ) {}
 
     public function hasCode(): bool

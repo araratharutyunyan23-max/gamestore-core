@@ -7,8 +7,6 @@ namespace Tests\Race;
 use App\Domain\Ordering\Enums\OrderStatus;
 use App\Domain\Payments\Actions\DrainUnappliedPayments;
 use App\Models\Order;
-use Illuminate\Http\Client\Pool;
-use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\Test;
@@ -109,18 +107,44 @@ final class ParallelWebhookTest extends RaceTestCase
             'Осиротевшее событие обязано остаться неприменённым, а не потеряться.',
         );
 
-        // Заказ создаётся ПОД ЭТИМ ЖЕ идентификатором.
-        DB::table('orders')->insert([
-            'public_id' => $publicId,
-            'idempotency_key' => 'orphan-key',
-            'product_id' => DB::table('products')->where('sku', 'KEY-CS2-PRIME')->value('id'),
-            'sku' => 'KEY-CS2-PRIME',
-            'amount_minor' => 129000,
-            'currency' => 'RUB',
-            'status' => OrderStatus::Created->value,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        // Заказ создаётся ПОД ЭТИМ ЖЕ идентификатором, в обход сервиса —
+        // так проверяется, что доводка работает от инбокса, а не от того,
+        // каким путём появился заказ.
+        $productId = DB::table('products')->where('sku', 'KEY-CS2-PRIME')->value('id');
+
+        // Заказ и его позиция — одной транзакцией: отложенный триггер
+        // order_items_total_matches отобьёт на коммите заказ без позиций,
+        // и это правильно. Даже фикстура, пишущая мимо приложения, обязана
+        // оставить заказ, в котором есть что выдавать.
+        $orderId = DB::transaction(static function () use ($publicId, $productId): int {
+            /** @var int $id */
+            $id = DB::table('orders')->insertGetId([
+                'public_id' => $publicId,
+                'idempotency_key' => 'orphan-key',
+                'product_id' => $productId,
+                'sku' => 'KEY-CS2-PRIME',
+                'amount_minor' => 129000,
+                'currency' => 'RUB',
+                'status' => OrderStatus::Created->value,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            DB::table('order_items')->insert([
+                'order_id' => $id,
+                'product_id' => $productId,
+                'line_no' => 1,
+                'sku' => 'KEY-CS2-PRIME',
+                'unit_amount_minor' => 129000,
+                'currency' => 'RUB',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return $id;
+        });
+
+        self::assertGreaterThan(0, $orderId);
 
         // Доводка забирает работу из ИНБОКСА, а не из статусов заказов:
         // заказ в created не виден ни одному статусному фильтру.
@@ -138,25 +162,6 @@ final class ParallelWebhookTest extends RaceTestCase
 
         self::assertSame(OrderStatus::Delivered, $order->status);
         $this->assertDeliveredExactlyOnce($order);
-    }
-
-    /**
-     * @param  list<array<string, mixed>>  $payloads
-     * @return array<int, int> код ответа => сколько раз встретился
-     */
-    private function fireParallel(array $payloads): array
-    {
-        $url = $this->baseUrl().'/api/v1/webhooks/payment';
-
-        /** @var array<int, Response> $responses */
-        $responses = Http::pool(static fn (Pool $pool): array => array_map(
-            static fn (array $payload) => $pool->acceptJson()->timeout(30)->post($url, $payload),
-            $payloads,
-        ));
-
-        $statuses = array_map(static fn (Response $r): int => $r->status(), array_values($responses));
-
-        return array_count_values($statuses);
     }
 
     private function assertDeliveredExactlyOnce(Order $order): void

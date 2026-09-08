@@ -181,7 +181,13 @@ final class TimeoutTrapTest extends SupplierTestCase
         // Эпоха выросла и СОХРАНИЛАСЬ: повторная выдача пошла с новым
         // request_id. Пока она жила только в памяти, повтор упирался
         // в delivery_attempts_request_uq и заказ было не довести.
-        self::assertGreaterThan(1, $order->refresh()->delivery_epoch);
+        //
+        // Эпоха читается с ПОЗИЦИИ: со второго этапа обращение к поставщику
+        // принадлежит позиции, а не заказу, и общая эпоха на заказ сдвигала бы
+        // request_id соседних позиций заодно.
+        $epoch = DB::table('order_items')->where('order_id', $order->id)->value('delivery_epoch');
+
+        self::assertGreaterThan(1, $epoch);
     }
 
     #[Test]
@@ -228,9 +234,15 @@ final class TimeoutTrapTest extends SupplierTestCase
 
         $requestId = DB::table('delivery_attempts')->where('order_id', $order->id)->value('request_id');
 
-        // Идентификатор строится из заказа, поставщика и эпохи — и НЕ зависит
-        // от номера сетевой попытки. Именно поэтому повтор безопасен.
-        self::assertSame("req_{$order->public_id}-A-1", $requestId);
+        // Идентификатор строится из заказа, ПОЗИЦИИ, поставщика и эпохи — и НЕ
+        // зависит от номера сетевой попытки. Именно поэтому повтор безопасен.
+        //
+        // Номер позиции добавлен вторым этапом и обязателен: без него две
+        // позиции одного заказа, идущие к одному поставщику, получали бы ОДИН
+        // идентификатор. Поставщик счёл бы второй запрос повтором первого и
+        // вернул бы тот же код — покупатель заплатил бы за два товара и
+        // получил один.
+        self::assertSame("req_{$order->public_id}-1-A-1", $requestId);
     }
 
     private function paidSupplierOrder(): Order

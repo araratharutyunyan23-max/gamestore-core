@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Delivery\Repositories;
 
+use App\Domain\Delivery\DTO\DeliveryTarget;
 use App\Domain\Delivery\DTO\RequestId;
 use App\Domain\Delivery\Enums\AttemptOutcome;
 use App\Domain\Delivery\Enums\SupplierName;
@@ -25,15 +26,20 @@ final readonly class DeliveryAttemptRepository
     /**
      * Записать намерение обратиться к поставщику.
      *
-     * Нарушение delivery_attempts_one_open_uq здесь означает «по заказу уже
+     * Нарушение delivery_attempts_item_open_uq здесь означает «по ПОЗИЦИИ уже
      * есть неразрешённая попытка» — и это правильный отказ, а не сбой:
      * открывать вторую, пока судьба первой неизвестна, нельзя.
+     *
+     * Ограничение задано на позицию, а не на заказ: иначе вторая позиция
+     * многопозиционного заказа не смогла бы даже начать выдачу, пока первая
+     * висит в неизвестности у своего поставщика.
      */
-    public function begin(int $orderId, SupplierName $supplier, RequestId $requestId, int $epoch, string $traceId): int
+    public function begin(DeliveryTarget $target, SupplierName $supplier, RequestId $requestId, int $epoch, string $traceId): int
     {
         /** @var int $id */
         $id = $this->db->table('delivery_attempts')->insertGetId([
-            'order_id' => $orderId,
+            'order_id' => $target->orderId,
+            'order_item_id' => $target->itemId,
             'supplier' => $supplier->value,
             'request_id' => $requestId->value,
             'epoch' => $epoch,
@@ -77,17 +83,23 @@ final readonly class DeliveryAttemptRepository
     /**
      * Неразрешённые попытки — worklist фонового выяснения судьбы.
      *
-     * @return list<object{id: int, order_id: int, supplier: string, request_id: string, probe_count: int}>
+     * @return list<object{id: int, order_id: int, order_item_id: int, supplier: string, request_id: string, epoch: int, product_id: int, public_id: string, line_no: int, sku: string, probe_count: int}>
      */
     public function unresolvedDue(int $limit): array
     {
-        /** @var list<object{id: int, order_id: int, supplier: string, request_id: string, probe_count: int}> $rows */
+        // Всё нужное — одним запросом с джойнами. Догружать заказ и позицию
+        // построчно означало бы N+1 в фоновом проходе, который по расписанию
+        // идёт каждую минуту (CLAUDE.md §4).
+        /** @var list<object{id: int, order_id: int, order_item_id: int, supplier: string, request_id: string, epoch: int, product_id: int, public_id: string, line_no: int, sku: string, probe_count: int}> $rows */
         $rows = $this->db->select(<<<'SQL'
-            SELECT id, order_id, supplier, request_id, probe_count
-              FROM delivery_attempts
-             WHERE outcome IN ('in_flight', 'timeout', 'unknown')
-               AND (next_probe_at IS NULL OR next_probe_at <= now())
-             ORDER BY started_at
+            SELECT a.id, a.order_id, a.order_item_id, a.supplier, a.request_id, a.epoch, a.probe_count,
+                   o.public_id, i.line_no, i.sku, i.product_id
+              FROM delivery_attempts a
+              JOIN order_items i ON i.id = a.order_item_id
+              JOIN orders o ON o.id = a.order_id
+             WHERE a.outcome IN ('in_flight', 'timeout', 'unknown')
+               AND (a.next_probe_at IS NULL OR a.next_probe_at <= now())
+             ORDER BY a.started_at
              LIMIT ?
         SQL, [$limit]);
 

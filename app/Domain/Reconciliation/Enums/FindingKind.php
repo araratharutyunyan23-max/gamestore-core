@@ -48,6 +48,12 @@ enum FindingKind: string
 
     case SupplierSurplusCode = 'supplier_surplus_code';
 
+    /** Поставщик отдал код, который уже отдавал по другому запросу. */
+    case SupplierDuplicateCode = 'supplier_returned_duplicate_code';
+
+    /** Поставщик отдал код от другого товара. */
+    case SupplierForeignCode = 'supplier_returned_foreign_code';
+
     /** Не инцидент: заказ ждёт пополнения склада. */
     case AwaitingRestock = 'awaiting_restock';
 
@@ -63,6 +69,9 @@ enum FindingKind: string
             self::LedgerUnbalanced, self::LatePaymentFailure, self::PaymentRevoked,
             self::EventIdReuse, self::SupplierPossibleDoubleCharge,
             self::SupplierSurplusCode => FindingSeverity::Critical,
+            // Дубль и чужой код — критично: за них, возможно, заплачено,
+            // и без разбора с поставщиком расхождение останется навсегда.
+            self::SupplierDuplicateCode, self::SupplierForeignCode => FindingSeverity::Critical,
         };
     }
 

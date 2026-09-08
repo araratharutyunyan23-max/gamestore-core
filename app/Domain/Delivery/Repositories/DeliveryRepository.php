@@ -6,9 +6,9 @@ namespace App\Domain\Delivery\Repositories;
 
 use App\Domain\Catalog\Enums\SupplyMode;
 use App\Domain\Delivery\DTO\ClaimedKey;
+use App\Domain\Delivery\DTO\DeliveryTarget;
 use App\Domain\Delivery\Enums\SupplierName;
 use App\Models\Delivery;
-use App\Models\Order;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\UniqueConstraintViolationException;
 
@@ -19,16 +19,17 @@ final readonly class DeliveryRepository
     /**
      * Запись факта выдачи из пула.
      *
-     * Нарушение deliveries_order_uq здесь означает «уже выдано» и обрабатывается
-     * вызывающим кодом СНАРУЖИ транзакции: после 23505 транзакция PostgreSQL
-     * уже в состоянии abort.
+     * Нарушение deliveries_order_item_uq здесь означает «эта позиция уже
+     * выдана» и обрабатывается вызывающим кодом СНАРУЖИ транзакции: после
+     * 23505 транзакция PostgreSQL уже в состоянии abort.
      */
-    public function recordFromPool(Order $order, ClaimedKey $key): int
+    public function recordFromPool(DeliveryTarget $target, ClaimedKey $key): int
     {
         /** @var int $id */
         $id = $this->db->table('deliveries')->insertGetId([
-            'order_id' => $order->id,
-            'product_id' => $order->product_id,
+            'order_id' => $target->orderId,
+            'order_item_id' => $target->itemId,
+            'product_id' => $target->productId,
             'supply_mode' => SupplyMode::Pool->value,
             'license_key_id' => $key->id,
             'code_encrypted' => $key->encryptedCode,
@@ -46,7 +47,7 @@ final readonly class DeliveryRepository
      * @throws UniqueConstraintViolationException
      */
     public function recordFromSupplier(
-        Order $order,
+        DeliveryTarget $target,
         SupplierName $supplier,
         string $requestId,
         string $encryptedCode,
@@ -55,8 +56,9 @@ final readonly class DeliveryRepository
     ): int {
         /** @var int $id */
         $id = $this->db->table('deliveries')->insertGetId([
-            'order_id' => $order->id,
-            'product_id' => $order->product_id,
+            'order_id' => $target->orderId,
+            'order_item_id' => $target->itemId,
+            'product_id' => $target->productId,
             'supply_mode' => SupplyMode::Supplier->value,
             'supplier' => $supplier->value,
             'request_id' => $requestId,
@@ -72,5 +74,10 @@ final readonly class DeliveryRepository
     public function findByOrderId(int $orderId): ?Delivery
     {
         return Delivery::query()->where('order_id', $orderId)->first();
+    }
+
+    public function findByOrderItemId(int $itemId): ?Delivery
+    {
+        return Delivery::query()->where('order_item_id', $itemId)->first();
     }
 }

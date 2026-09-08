@@ -95,6 +95,10 @@ final readonly class OrderStateMachine
         return match ($to) {
             OrderStatus::Paid => $columns + ['paid_at' => now()],
             OrderStatus::Delivered => $columns + ['delivered_at' => now(), 'next_action_at' => now()],
+            // Расчёт закончен, но заказ исполнен не целиком: delivered_at
+            // не ставится намеренно — правда о том, ЧТО и когда выдано, живёт
+            // в позициях, а на заказе такая отметка была бы полуправдой.
+            OrderStatus::PartiallyDelivered, OrderStatus::Refunded => $columns + ['next_action_at' => now()],
             OrderStatus::PaymentFailed, OrderStatus::Cancelled => $columns + ['failed_at' => now()],
             OrderStatus::Created, OrderStatus::Delivering,
             OrderStatus::OutOfStock, OrderStatus::DeliveryFailed => $columns,

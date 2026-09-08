@@ -167,11 +167,28 @@ final class DeliveryInvariantTest extends TestCase
         return $keys;
     }
 
+    /**
+     * Единственная позиция заказа.
+     *
+     * Гарантии выдачи заданы на позицию, а не на заказ, поэтому фикстуры
+     * обязаны на неё ссылаться. Заказы этих тестов однопозиционные — они
+     * проверяют сам инвариант, а не многопозиционность.
+     */
+    private function firstItemId(Order $order): int
+    {
+        $id = DB::table('order_items')->where('order_id', $order->id)->where('line_no', 1)->value('id');
+
+        self::assertIsNumeric($id, 'У заказа нет позиции — фикстура собрана неверно.');
+
+        return (int) $id;
+    }
+
     private function recordDelivery(Order $order, LicenseKey $key): int
     {
         /** @var int $id */
         $id = DB::table('deliveries')->insertGetId([
             'order_id' => $order->id,
+            'order_item_id' => $this->firstItemId($order),
             'product_id' => $order->product_id,
             'supply_mode' => 'pool',
             'license_key_id' => $key->id,
@@ -187,8 +204,9 @@ final class DeliveryInvariantTest extends TestCase
     {
         DB::table('delivery_attempts')->insert([
             'order_id' => $order->id,
+            'order_item_id' => $this->firstItemId($order),
             'supplier' => $supplier->value,
-            'request_id' => sprintf('req_%s-%s-%d', $order->public_id, $supplier->value, $epoch),
+            'request_id' => sprintf('req_%s-1-%s-%d', $order->public_id, $supplier->value, $epoch),
             'epoch' => $epoch,
             'outcome' => $outcome->value,
         ]);

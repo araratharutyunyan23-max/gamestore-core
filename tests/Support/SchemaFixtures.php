@@ -25,7 +25,7 @@ trait SchemaFixtures
     {
         $product = Product::query()->where('sku', $sku)->firstOrFail();
 
-        return Order::query()->create([
+        $order = Order::query()->create([
             'public_id' => $publicId,
             'idempotency_key' => 'idem-'.$publicId,
             'product_id' => $product->id,
@@ -33,6 +33,23 @@ trait SchemaFixtures
             'amount_minor' => $product->price_minor,
             'currency' => $product->currency,
         ]);
+
+        // Позиция обязательна даже здесь, где мы намеренно пишем мимо сервисов:
+        // отложенный триггер order_items_total_matches отобьёт на коммите заказ
+        // без позиций. Это не помеха фикстуре, а доказательство, что инвариант
+        // держит база — обойти его через DB напрямую тоже не выходит.
+        DB::table('order_items')->insert([
+            'order_id' => $order->id,
+            'product_id' => $product->id,
+            'line_no' => 1,
+            'sku' => $product->sku,
+            'unit_amount_minor' => $product->price_minor,
+            'currency' => $product->currency,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return $order;
     }
 
     private function accountId(LedgerAccount $account, string $currency = 'RUB'): int

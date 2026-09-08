@@ -22,6 +22,18 @@ enum OrderStatus: string
     case DeliveryFailed = 'delivery_failed';
 
     /**
+     * Часть товара выдана, за остальное деньги возвращены — честное завершение.
+     *
+     * Отличается от delivery_failed принципиально: оттуда есть дорога назад
+     * в выдачу, отсюда нет. Заказ рассчитан, и подметальщику здесь делать
+     * нечего.
+     */
+    case PartiallyDelivered = 'partially_delivered';
+
+    /** Не выдано ничего, возвращено всё. Тоже завершение, а не авария. */
+    case Refunded = 'refunded';
+
+    /**
      * Оплата отозвана до начала выдачи. Не из букваря ТЗ, но без этого состояния
      * поздний failed по ещё не выданному заказу некуда записать, а reaper потом
      * выдаёт товар клиенту, которому уже вернули деньги.
@@ -32,7 +44,8 @@ enum OrderStatus: string
     public function isFinal(): bool
     {
         return match ($this) {
-            self::Delivered, self::PaymentFailed, self::Cancelled => true,
+            self::Delivered, self::PartiallyDelivered, self::Refunded,
+            self::PaymentFailed, self::Cancelled => true,
             self::Created, self::Paid, self::Delivering, self::OutOfStock, self::DeliveryFailed => false,
         };
     }
@@ -47,8 +60,8 @@ enum OrderStatus: string
         // а не позволит новому кейсу молча провалиться в «не восстановимо».
         return match ($this) {
             self::OutOfStock, self::DeliveryFailed => true,
-            self::Created, self::Paid, self::Delivering,
-            self::Delivered, self::PaymentFailed, self::Cancelled => false,
+            self::Created, self::Paid, self::Delivering, self::Delivered,
+            self::PartiallyDelivered, self::Refunded, self::PaymentFailed, self::Cancelled => false,
         };
     }
 
@@ -57,7 +70,8 @@ enum OrderStatus: string
     {
         return match ($this) {
             self::Paid, self::Delivering, self::OutOfStock, self::DeliveryFailed => true,
-            self::Created, self::Delivered, self::PaymentFailed, self::Cancelled => false,
+            self::Created, self::Delivered, self::PartiallyDelivered, self::Refunded,
+            self::PaymentFailed, self::Cancelled => false,
         };
     }
 
@@ -73,8 +87,8 @@ enum OrderStatus: string
     {
         return match ($this) {
             self::OutOfStock, self::DeliveryFailed => true,
-            self::Created, self::Paid, self::Delivering,
-            self::Delivered, self::PaymentFailed, self::Cancelled => false,
+            self::Created, self::Paid, self::Delivering, self::Delivered,
+            self::PartiallyDelivered, self::Refunded, self::PaymentFailed, self::Cancelled => false,
         };
     }
 
@@ -98,10 +112,18 @@ enum OrderStatus: string
             self::Created => [self::Paid, self::PaymentFailed],
             // Отмена возможна только пока ни одна выдача не начата.
             self::Paid => [self::Delivering, self::Cancelled],
-            self::Delivering => [self::Delivered, self::OutOfStock, self::DeliveryFailed],
+            self::Delivering => [
+                self::Delivered, self::OutOfStock, self::DeliveryFailed,
+                self::PartiallyDelivered, self::Refunded,
+            ],
             // Восстановление: после пополнения остатка или ручного ретрая.
-            self::OutOfStock, self::DeliveryFailed => [self::Delivering, self::Cancelled],
-            self::Delivered, self::PaymentFailed, self::Cancelled => [],
+            // Плюс расчёт: за невыданное вернули деньги, и заказ закрыт.
+            self::OutOfStock, self::DeliveryFailed => [
+                self::Delivering, self::Cancelled,
+                self::PartiallyDelivered, self::Refunded,
+            ],
+            self::Delivered, self::PartiallyDelivered, self::Refunded,
+            self::PaymentFailed, self::Cancelled => [],
         };
     }
 

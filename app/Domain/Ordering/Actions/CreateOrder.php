@@ -7,6 +7,7 @@ namespace App\Domain\Ordering\Actions;
 use App\Domain\Catalog\Exceptions\ProductNotPurchasable;
 use App\Domain\Catalog\Repositories\ProductRepository;
 use App\Domain\Ordering\DTO\CreateOrderCommand;
+use App\Domain\Ordering\Exceptions\MixedCurrencyOrder;
 use App\Domain\Ordering\Repositories\OrderRepository;
 use App\Domain\Payments\Actions\DrainUnappliedPayments;
 use App\Models\Order;
@@ -14,7 +15,7 @@ use Illuminate\Database\UniqueConstraintViolationException;
 use RuntimeException;
 
 /**
- * Создание заказа по SKU.
+ * Создание заказа по списку SKU.
  *
  * Идемпотентность держится на индексе orders_idempotency_key_uq, а не на
  * предварительной проверке: между SELECT и INSERT помещается конкурент.
@@ -31,6 +32,7 @@ final readonly class CreateOrder
 
     /**
      * @throws ProductNotPurchasable
+     * @throws MixedCurrencyOrder
      */
     public function execute(CreateOrderCommand $command): Order
     {
@@ -40,10 +42,11 @@ final readonly class CreateOrder
             return $existing;
         }
 
-        $product = $this->products->purchasableBySku($command->sku);
+        // Один запрос на весь список, а не выборка на позицию.
+        $products = $this->products->purchasableBySkus($command->skus);
 
         try {
-            $this->orders->create($this->orders->nextPublicId(), $command->idempotencyKey, $product);
+            $this->orders->create($this->orders->nextPublicId(), $command->idempotencyKey, $products);
         } catch (UniqueConstraintViolationException) {
             // Конкурент успел первым с тем же ключом идемпотентности.
             // Это штатный исход повторной отправки, а не ошибка.

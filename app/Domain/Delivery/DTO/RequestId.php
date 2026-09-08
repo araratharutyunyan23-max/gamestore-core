@@ -9,7 +9,13 @@ use App\Domain\Delivery\Enums\SupplierName;
 /**
  * Детерминированный идентификатор обращения к поставщику.
  *
- * Строится из (заказ, поставщик, эпоха) и НЕ зависит от номера сетевой попытки.
+ * Строится из (заказ, ПОЗИЦИЯ, поставщик, эпоха) и НЕ зависит от номера сетевой
+ * попытки.
+ *
+ * Номер позиции обязателен со второго этапа: без него две позиции одного заказа,
+ * идущие к одному поставщику, получают ОДИН идентификатор. Поставщик счёл бы
+ * второй запрос повтором первого и вернул бы тот же код — то есть покупатель
+ * заплатил бы за два товара и получил один.
  * Это ключевое: повтор после таймаута обязан идти с тем же идентификатором,
  * иначе поставщик считает его новым запросом и выдаёт ВТОРОЙ код.
  *
@@ -20,9 +26,26 @@ final readonly class RequestId
 {
     private function __construct(public string $value, public int $epoch) {}
 
-    public static function for(string $orderPublicId, SupplierName $supplier, int $epoch): self
+    public static function for(string $orderPublicId, int $lineNo, SupplierName $supplier, int $epoch): self
     {
-        return new self(sprintf('req_%s-%s-%d', $orderPublicId, $supplier->value, $epoch), $epoch);
+        return new self(
+            sprintf('req_%s-%d-%s-%d', $orderPublicId, $lineNo, $supplier->value, $epoch),
+            $epoch,
+        );
+    }
+
+    /**
+     * Восстановить идентификатор из сохранённой попытки.
+     *
+     * Именно восстановить, а не собрать заново. Пересборка из текущей эпохи
+     * заказа — скрытая ловушка: эпоха могла сдвинуться после того, как попытка
+     * началась, и получившийся идентификатор оказался бы ЧУЖИМ. Спрашивать
+     * поставщика о судьбе не того запроса — верный способ решить, что кода нет,
+     * когда он есть.
+     */
+    public static function restore(string $value, int $epoch): self
+    {
+        return new self($value, $epoch);
     }
 
     public function __toString(): string

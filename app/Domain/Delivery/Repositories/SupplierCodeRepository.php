@@ -61,6 +61,42 @@ final readonly class SupplierCodeRepository
         );
     }
 
+    /**
+     * Кому уже принадлежит этот код.
+     *
+     * Нужен ровно для одного вопроса: поставщик прислал код, который мы уже
+     * видели, — по какому запросу он его выдавал в прошлый раз? Без ответа
+     * находку сверки не с чем разбирать.
+     */
+    public function ownerOfCode(string $codeHash): ?string
+    {
+        $requestId = $this->db->table('supplier_issued_codes')
+            ->where('code_hash', $codeHash)
+            ->value('request_id');
+
+        return is_string($requestId) ? $requestId : null;
+    }
+
+    /**
+     * Записать отвергнутый код.
+     *
+     * Записать, а не выбросить. Мы за него, возможно, заплатили: поставщик
+     * списал его у себя, и расхождение придётся разбирать. Разбирать нечего,
+     * если следа не осталось.
+     */
+    public function reject(string $requestId, SupplierName $supplier, string $code): void
+    {
+        $this->db->table('supplier_issued_codes')->insertOrIgnore([
+            'request_id' => $requestId,
+            'supplier' => $supplier->value,
+            'code_encrypted' => encrypt($code),
+            'code_hash' => LicenseKey::fingerprint($code),
+            'code_last4' => LicenseKey::last4($code),
+            'disposition' => CodeDisposition::Rejected->value,
+            'received_at' => now(),
+        ]);
+    }
+
     public function assign(int $codeId, CodeDisposition $disposition): void
     {
         $this->db->table('supplier_issued_codes')->where('id', $codeId)->update([

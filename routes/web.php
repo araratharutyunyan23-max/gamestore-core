@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\HealthController;
+use App\Http\Controllers\LedgerHistoryController;
 use App\Http\Controllers\MetricsController;
 use App\Http\Controllers\ReconciliationController;
 use Illuminate\Contracts\View\View;
@@ -25,6 +26,8 @@ Route::get('/', static fn (): JsonResponse => response()->json([
         'get_order' => 'GET /api/v1/orders/{public_id}',
         'payment_webhook' => 'POST /api/v1/webhooks/payment',
         'reconciliation' => 'GET /ops/reconciliation',
+        'ledger_history' => 'GET /ops/ledger?as_of= | ?from=&to=',
+        'order_as_of' => 'GET /api/v1/orders/{public_id}?as_of=',
     ],
 ]));
 
@@ -41,6 +44,12 @@ Route::get('/ops/reconciliation', ReconciliationController::class);
 | балансировщик, и секретов в ответе нет. /metrics закрыт тем же
 | эксплуатационным токеном: по счётчикам заказов читается оборот.
 */
+/*
+| История денег: остатки на момент и обороты за период (ТЗ 4). Под тем же
+| эксплуатационным токеном — это внутреннее состояние денег.
+*/
+Route::get('/ops/ledger', LedgerHistoryController::class)->name('ops.ledger');
+
 Route::get('/health', HealthController::class)->name('health');
 Route::get('/metrics', MetricsController::class)->name('metrics');
 

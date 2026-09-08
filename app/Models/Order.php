@@ -7,12 +7,20 @@ namespace App\Models;
 use App\Domain\Ordering\Enums\OrderStatus;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
- * Заказ. Одна позиция, quantity = 1 (CLAUDE.md §10.1).
+ * Заказ — контейнер позиций и денег.
+ *
+ * До второго этапа товар в заказе был один и лежал прямо здесь (product_id,
+ * sku, amount_minor). Теперь товары живут в order_items, а эти колонки
+ * остаются снимком ПЕРВОЙ позиции: убирать их одновременно с переездом данных
+ * значило бы ломать первый этап и его тесты в том же коммите, что и вводить
+ * новую модель. Сначала данные переезжают, потом колонки исчезают.
  *
  * Никаких методов вида isPaid()/markDelivered(): переходы живут в
  * OrderStateMachine, а фактические записи — в репозитории условными UPDATE.
@@ -27,10 +35,6 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property int $amount_minor
  * @property string $currency
  * @property OrderStatus $status
- * @property string|null $lease_token
- * @property CarbonImmutable|null $lease_expires_at
- * @property string|null $lease_owner
- * @property int $delivery_epoch
  * @property int $restock_waits
  * @property CarbonImmutable $status_changed_at
  * @property CarbonImmutable $next_action_at
@@ -42,7 +46,8 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property CarbonImmutable $created_at
  * @property CarbonImmutable $updated_at
  * @property-read Product $product
- * @property-read Delivery|null $delivery
+ * @property-read Collection<int, OrderItem> $items
+ * @property-read Collection<int, Delivery> $deliveries
  * @property-read OrderPaymentState|null $paymentState
  */
 final class Order extends Model
@@ -50,8 +55,11 @@ final class Order extends Model
     protected $table = 'orders';
 
     /**
-     * Аренда, эпоха и статус НЕ заполняются массово: их двигают только условные
-     * UPDATE с проверкой предусловия, иначе теряется смысл fencing-токена.
+     * Статус НЕ заполняется массово: его двигают только условные UPDATE
+     * с проверкой предусловия.
+     *
+     * Аренда и эпоха выдачи с заказа ушли: со второго этапа они принадлежат
+     * позиции, потому что позиции выдаются независимо друг от друга.
      *
      * @var list<string>
      */
@@ -71,14 +79,31 @@ final class Order extends Model
     }
 
     /**
-     * Ровно одна выдача на заказ — это держит индекс deliveries_order_uq,
-     * поэтому связь hasOne, а не hasMany.
+     * Позиции заказа в порядке строк.
      *
-     * @return HasOne<Delivery, $this>
+     * Порядок задан явно: без него база вправе вернуть строки как угодно,
+     * и ответ API на два одинаковых запроса отличался бы порядком товаров.
+     *
+     * @return HasMany<OrderItem, $this>
      */
-    public function delivery(): HasOne
+    public function items(): HasMany
     {
-        return $this->hasOne(Delivery::class, 'order_id');
+        return $this->hasMany(OrderItem::class, 'order_id')->orderBy('line_no');
+    }
+
+    /**
+     * Выдачи заказа — по одной на позицию.
+     *
+     * Была hasOne, пока товар в заказе был один. Оставить её значило бы
+     * возвращать ПРОИЗВОЛЬНУЮ из нескольких выдач: Eloquent взял бы первую
+     * попавшуюся, и покупатель в ответе API видел бы чужой код из своего же
+     * заказа. Один-к-одному теперь у позиции, где его и держит индекс.
+     *
+     * @return HasMany<Delivery, $this>
+     */
+    public function deliveries(): HasMany
+    {
+        return $this->hasMany(Delivery::class, 'order_id');
     }
 
     /**
@@ -111,11 +136,9 @@ final class Order extends Model
         return [
             'product_id' => 'integer',
             'amount_minor' => 'integer',
-            'delivery_epoch' => 'integer',
             'restock_waits' => 'integer',
             'needs_review' => 'boolean',
             'status' => OrderStatus::class,
-            'lease_expires_at' => 'immutable_datetime',
             'status_changed_at' => 'immutable_datetime',
             'next_action_at' => 'immutable_datetime',
             'paid_at' => 'immutable_datetime',

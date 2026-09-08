@@ -15,6 +15,15 @@ enum CodeDisposition: string
     case ForOrder = 'for_order';
     case Surplus = 'surplus';
 
+    /**
+     * Код отвергнут: поставщик прислал чужой или уже выданный.
+     *
+     * Не удаляется и не забывается. Мы за него, возможно, заплатили, и
+     * расхождение с поставщиком придётся разбирать — а разбирать нечего,
+     * если следа не осталось.
+     */
+    case Rejected = 'rejected';
+
     /** @return list<string> */
     public static function values(): array
     {

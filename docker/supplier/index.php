@@ -102,6 +102,7 @@ local code = redis.call('LPOP', KEYS[2])
 if not code then return {'out_of_stock', ''} end
 redis.call('HSET', KEYS[1], 'state', 'issued', 'code', code, 'sku', ARGV[1])
 redis.call('RPUSH', KEYS[3], ARGV[2])
+redis.call('SET', KEYS[4], code)
 return {'issued', code}
 LUA;
 
@@ -275,8 +276,13 @@ if ($method === 'POST' && $path === '/issue') {
         usleep($delayMs * 1000);
     }
 
+    // Предыдущий выданный код читается ДО выдачи: сама выдача его перезапишет,
+    // и режим «дубль» подставил бы свежий код вместо чужого, то есть не создал
+    // бы дубля вовсе.
+    $previouslyIssued = $redis->get($prefix.'last_code');
+
     /** @var array{0: string, 1: string} $issue */
-    $issue = $redis->eval(ISSUE_LUA, [$ridKey($requestId), $prefix.'pool:'.$sku, $prefix.'issued', $sku, $requestId], 3);
+    $issue = $redis->eval(ISSUE_LUA, [$ridKey($requestId), $prefix.'pool:'.$sku, $prefix.'issued', $prefix.'last_code', $sku, $requestId], 4);
 
     if ($issue[0] === 'out_of_stock') {
         // Тот же случай: выдачи не было, захват отпускается.
@@ -297,7 +303,43 @@ if ($method === 'POST' && $path === '/issue') {
         sleep(30);
     }
 
-    reply(200, ['status' => 'ok', 'request_id' => $requestId, 'code' => $issue[1]]);
+    // Дальше — недобросовестные поведения второго этапа. Код УЖЕ выдан и
+    // списан у поставщика; врёт именно ответ. В этом весь смысл задачи 2:
+    // ответу поставщика доверять нельзя, и защита обязана стоять на нашей
+    // стороне, а не на его добросовестности.
+
+    $answeredCode = $issue[1];
+    $answeredSku = $sku;
+
+    if ($mode === 'duplicate_code') {
+        // Поставщик втихую отдаёт код, который уже отдавал по другому запросу.
+        // Для нас это код, который вот-вот уйдёт ДВУМ покупателям.
+        if (is_string($previouslyIssued) && $previouslyIssued !== '') {
+            $answeredCode = $previouslyIssued;
+        }
+    }
+
+    if ($mode === 'foreign_code') {
+        // Код от чужого товара: выдан по другому SKU. Проверить сам код мы не
+        // можем — но можем сверить товар, который поставщик объявил.
+        $answeredSku = 'FOREIGN-'.$sku;
+    }
+
+    if ($mode === 'error_after_issue') {
+        // 500 после настоящей выдачи. Отличается от timeout_after_issue тем,
+        // что ответ ПРИШЁЛ и выглядит как отказ. Наивная логика сочтёт это
+        // доказанным «не выдано» и уйдёт покупать второй код.
+        reply(500, ['status' => 'error', 'reason' => 'internal']);
+    }
+
+    reply(200, [
+        'status' => 'ok',
+        'request_id' => $requestId,
+        'code' => $answeredCode,
+        // Товар, по которому поставщик объявил выдачу. Расширение контракта
+        // заглушки (CLAUDE.md §10.3): без него «чужой код» нечем поймать.
+        'sku' => $answeredSku,
+    ]);
 }
 
 reply(404, ['status' => 'error', 'reason' => 'unknown_endpoint']);

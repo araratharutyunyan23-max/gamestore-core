@@ -55,8 +55,8 @@ final class StructuredLoggingTest extends TestCase
         $order = $this->paidOrder();
         app(DeliverOrder::class)->execute($order->public_id);
 
-        $order->refresh()->load('delivery');
-        $code = $order->delivery?->code_encrypted;
+        $order->refresh()->load('items.delivery');
+        $code = $order->items->first()?->delivery?->code_encrypted;
 
         self::assertNotNull($code, 'Заказ не выдан — проверять нечего.');
         self::assertNotSame([], $this->captured, 'Не записано ни одного события.');

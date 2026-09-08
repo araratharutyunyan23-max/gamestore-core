@@ -6,6 +6,7 @@ namespace App\Console\Commands;
 
 use App\Domain\Ordering\Repositories\OrderRepository;
 use App\Models\Order;
+use App\Models\OrderItem;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Sleep;
@@ -55,11 +56,29 @@ final class DemoCommand extends Command
         $this->components->twoColumnDetail('Статус заказа', $order->status->value);
         $this->components->twoColumnDetail('Состояние оплаты', $order->paymentState?->state->value ?? '—');
         $this->components->twoColumnDetail(
-            'Выданный код',
-            $order->delivery === null ? '— (нет выдачи)' : $order->delivery->code_encrypted,
+            $order->items->count() > 1 ? 'Выданные коды' : 'Выданный код',
+            $this->issuedCodes($order),
         );
 
-        return $order->delivery !== null ? self::SUCCESS : self::FAILURE;
+        return $order->deliveries->isNotEmpty() ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * Коды по позициям заказа.
+     *
+     * Со второго этапа их может быть несколько: в заказе несколько товаров,
+     * и у каждого свой код. Показывать один — значит скрывать от проверяющего
+     * ровно ту часть, ради которой этап и делался.
+     */
+    private function issuedCodes(Order $order): string
+    {
+        $codes = $order->items
+            ->map(static fn (OrderItem $item): string => $item->delivery === null
+                ? sprintf('#%d %s — нет выдачи', $item->line_no, $item->sku)
+                : sprintf('#%d %s', $item->line_no, $item->delivery->code_encrypted))
+            ->all();
+
+        return $codes === [] ? '— (нет выдачи)' : implode('   ', $codes);
     }
 
     private function createOrder(string $base, string $sku): string
@@ -85,7 +104,7 @@ final class DemoCommand extends Command
         for ($attempt = 0; $attempt < 40; $attempt++) {
             $order = $orders->findByPublicId($publicId);
 
-            if ($order !== null && ($order->delivery !== null || $order->status->isFinal())) {
+            if ($order !== null && ($order->deliveries->isNotEmpty() || $order->status->isFinal())) {
                 return $order;
             }
 
