@@ -99,7 +99,7 @@ paths:
   /api/v1/orders:
     post:
       tags: [Заказы]
-      summary: Создать заказ по SKU
+      summary: Создать заказ
       description: |
         Заголовок `Idempotency-Key` обязателен. Сгенерировать его на сервере
         нельзя: серверный ключ уникален на каждый запрос, то есть повтор создал
@@ -107,6 +107,17 @@ paths:
 
         Повторный запрос с тем же ключом возвращает **тот же** заказ,
         а не создаёт новый.
+
+        **Два валидных тела.** `{"sku": "..."}` — контракт первого этапа,
+        остаётся рабочим. `{"items": [...]}` — заказ из нескольких товаров,
+        каждый со своим поставщиком. Заказ из одного товара — частный случай
+        списка, а не отдельный путь.
+
+        Передать оба поля сразу нельзя: у такого запроса два разных смысла,
+        а угадывать намерение клиента в платёжном пути недопустимо.
+
+        Один и тот же SKU дважды — это **две позиции**, а не одна: заплачено
+        за два кода. Итог заказа равен сумме позиций, и это проверяет база.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -120,12 +131,41 @@ paths:
           application/json:
             schema:
               type: object
-              required: [sku]
+              description: Ровно одна из форм — sku или items.
               properties:
                 sku:
                   type: string
                   maxLength: 64
+                  description: Форма первого этапа. Несовместима с `items`.
                   example: KEY-CS2-PRIME
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  description: |
+                    Позиции заказа. Порядок сохраняется: `line_no` в ответе
+                    повторяет порядок этого списка.
+
+                    Потолок в 20 позиций не вкусовщина: список без границы
+                    означает, что один запрос может попросить выдать тысячи
+                    кодов.
+                  items:
+                    type: object
+                    required: [sku]
+                    properties:
+                      sku: { type: string, maxLength: 64, example: KEY-CS2-PRIME }
+              oneOf:
+                - required: [sku]
+                - required: [items]
+            examples:
+              один товар:
+                value: { sku: KEY-CS2-PRIME }
+              несколько товаров:
+                value:
+                  items:
+                    - sku: KEY-CS2-PRIME
+                    - sku: STEAM-TOPUP-500
+                    - sku: SUB-DISCORD-1M
       responses:
         "201":
           description: Заказ создан или возвращён повторно по тому же ключу
@@ -137,8 +177,14 @@ paths:
                   data: { $ref: "#/components/schemas/Order" }
         "422":
           description: |
-            Нет заголовка `Idempotency-Key`, он длиннее 128 символов,
-            не передан `sku` или SKU недоступен к покупке.
+            Нет заголовка `Idempotency-Key` или он длиннее 128 символов;
+            не передан ни `sku`, ни `items`; переданы оба сразу; список
+            позиций пуст или длиннее 20; какой-то SKU недоступен к покупке;
+            позиции в разных валютах.
+
+            Неизвестный SKU в списке отбивает **весь** заказ. Частичное
+            создание хуже отказа: покупатель заплатил бы за то, чего в заказе
+            нет, и разбираться пришлось бы сверке.
           content:
             application/json:
               schema:
@@ -150,6 +196,10 @@ paths:
                   value:
                     error: sku_not_purchasable
                     message: SKU NO-SUCH-SKU is unknown or not available for purchase
+                mixed_currency_order:
+                  value:
+                    error: mixed_currency_order
+                    message: "Order mixes currencies: RUB, USD"
 
   /api/v1/orders/{publicId}:
     get:
@@ -369,17 +419,33 @@ components:
 
     Order:
       type: object
-      required: [id, status, sku, amount_minor, currency, created_at]
+      required: [id, status, sku, amount_minor, currency, items, created_at]
       properties:
         id:
           type: string
           description: Внешний идентификатор. Внутренние идентификаторы наружу не отдаются.
           example: ord_00001
         status: { $ref: "#/components/schemas/OrderStatus" }
-        sku: { type: string, example: KEY-CS2-PRIME }
-        product_name: { type: string, example: CS2 Prime Status ключ }
-        amount_minor: { type: integer, example: 129000 }
+        sku:
+          type: string
+          description: |
+            Снимок ПЕРВОЙ позиции. Поле осталось ради контракта первого этапа,
+            по которому уже интегрировались. Источник истины о товарах заказа —
+            `items`.
+          example: KEY-CS2-PRIME
+        product_name:
+          type: string
+          description: Название товара первой позиции, см. оговорку к `sku`.
+          example: CS2 Prime Status ключ
+        amount_minor:
+          type: integer
+          description: Итог заказа — сумма позиций. Равенство обеспечено базой.
+          example: 129000
         currency: { type: string, example: RUB }
+        items:
+          type: array
+          description: Позиции заказа в порядке строк.
+          items: { $ref: "#/components/schemas/OrderItem" }
         payment_state:
           type: [string, "null"]
           enum: [paid, failed, null]
@@ -393,6 +459,38 @@ components:
             code: { type: string, example: LFXC-TNCS-BPCD }
             delivered_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
+
+    OrderItem:
+      type: object
+      required: [line_no, sku, product_name, amount_minor, status]
+      properties:
+        line_no:
+          type: integer
+          description: Номер строки, начиная с единицы. Порядок тот же, что в запросе.
+          example: 1
+        sku: { type: string, example: KEY-CS2-PRIME }
+        product_name: { type: string, example: CS2 Prime Status ключ }
+        amount_minor: { type: integer, example: 129000 }
+        status: { $ref: "#/components/schemas/OrderItemStatus" }
+
+    OrderItemStatus:
+      type: string
+      enum:
+        - pending
+        - delivering
+        - delivered
+        - out_of_stock
+        - delivery_failed
+        - refunded
+        - cancelled
+      description: |
+        Состояние отдельной позиции. Зеркалит статусы заказа, но не совпадает
+        с ними: у позиции есть `refunded`, которого у заказа первого этапа быть
+        не могло — возвращать часть денег было не за что, товар был один.
+
+        Финальные состояния: `delivered`, `refunded`, `cancelled`. `refunded`
+        финален вместе с `delivered`: деньги за позицию уже вернули, и повторная
+        выдача по ней означала бы товар без оплаты.
 
     OrderStatus:
       type: string
