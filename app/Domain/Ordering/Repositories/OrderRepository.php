@@ -4,13 +4,10 @@ declare(strict_types=1);
 
 namespace App\Domain\Ordering\Repositories;
 
-use App\Domain\Ordering\DTO\DeliveryLease;
-use App\Domain\Ordering\Enums\OrderStatus;
 use App\Domain\Ordering\Exceptions\MixedCurrencyOrder;
 use App\Models\Order;
 use App\Models\Product;
 use Illuminate\Database\ConnectionInterface;
-use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Carbon;
 
 /**
@@ -27,7 +24,7 @@ final readonly class OrderRepository
     public function findByPublicId(string $publicId): ?Order
     {
         return Order::query()
-            ->with(['product', 'delivery', 'paymentState', 'items.product'])
+            ->with(['product', 'paymentState', 'items.product', 'items.delivery'])
             ->where('public_id', $publicId)
             ->first();
     }
@@ -35,7 +32,7 @@ final readonly class OrderRepository
     public function findByIdempotencyKey(string $key): ?Order
     {
         return Order::query()
-            ->with(['product', 'delivery', 'paymentState', 'items.product'])
+            ->with(['product', 'paymentState', 'items.product', 'items.delivery'])
             ->where('idempotency_key', $key)
             ->first();
     }
@@ -55,7 +52,7 @@ final readonly class OrderRepository
     public function lockById(int $id): ?Order
     {
         return Order::query()
-            ->with(['product', 'delivery', 'paymentState', 'items.product'])
+            ->with(['product', 'paymentState', 'items.product', 'items.delivery'])
             ->where('id', $id)
             ->lock('for no key update')
             ->first();
@@ -74,11 +71,18 @@ final readonly class OrderRepository
     {
         /** @var list<object{public_id: string, status: string}> $rows */
         $rows = $this->db->select(<<<'SQL'
-            SELECT public_id, status
+            SELECT orders.public_id, orders.status
               FROM orders
-             WHERE status IN ('paid', 'delivering', 'out_of_stock', 'delivery_failed')
-               AND status_changed_at < now() - make_interval(mins => ?)
-               AND (lease_expires_at IS NULL OR lease_expires_at <= now())
+             WHERE orders.status IN ('paid', 'delivering', 'out_of_stock', 'delivery_failed')
+               AND orders.status_changed_at < now() - make_interval(mins => ?)
+               -- Аренда живёт на позициях, а не на заказе. Заказ, у которого
+               -- хоть одну позицию прямо сейчас выдают, трогать рано: работа
+               -- идёт, и повторный dispatch только займёт воркер впустую.
+               AND NOT EXISTS (
+                   SELECT 1 FROM order_items i
+                    WHERE i.order_id = orders.id
+                      AND i.lease_expires_at > now()
+               )
              ORDER BY next_action_at
              LIMIT ?
         SQL, [$olderThanMinutes, $limit]);
@@ -154,69 +158,6 @@ final readonly class OrderRepository
 
             $this->db->table('order_items')->insert($rows);
         });
-    }
-
-    /**
-     * Захватить аренду на выдачу.
-     *
-     * Условный UPDATE — это и есть compare-and-set: второй конкурент
-     * блокируется на строке, после коммита первого перепроверяет условие по
-     * новой версии и получает ноль строк. «Я выиграл» означает ровно одно —
-     * затронута одна строка.
-     *
-     * Протухшая аренда перехватывается по времени: воркер, упавший во время
-     * выдачи, не блокирует заказ навсегда.
-     */
-    public function acquireDeliveryLease(int $orderId, string $token, int $seconds, string $owner): ?DeliveryLease
-    {
-        $affected = $this->db->table('orders')
-            ->where('id', $orderId)
-            ->whereIn('status', array_map(
-                static fn (OrderStatus $status): string => $status->value,
-                OrderStatus::awaitingDelivery(),
-            ))
-            ->where(function (Builder $query): void {
-                $query->whereNull('lease_expires_at')->orWhere('lease_expires_at', '<=', now());
-            })
-            ->update([
-                'lease_token' => $token,
-                'lease_owner' => $owner,
-                'lease_expires_at' => now()->addSeconds($seconds),
-                'updated_at' => now(),
-            ]);
-
-        return $affected === 1 ? new DeliveryLease($orderId, $token) : null;
-    }
-
-    /**
-     * Снять аренду. Условие по токену обязательно: аренда могла протухнуть
-     * и уйти другому воркеру, и снимать её тогда уже не наше дело.
-     */
-    public function releaseDeliveryLease(DeliveryLease $lease): void
-    {
-        $this->db->table('orders')
-            ->where('id', $lease->orderId)
-            ->where('lease_token', $lease->token)
-            ->update(['lease_token' => null, 'lease_owner' => null, 'lease_expires_at' => null, 'updated_at' => now()]);
-    }
-
-    /**
-     * Увеличить эпоху выдачи.
-     *
-     * Эпоха входит в request_id, поэтому её рост означает право получить НОВЫЙ
-     * код. Двигать её можно только после ДОКАЗАННОГО отсутствия выдачи — пока
-     * судьба предыдущего обращения неизвестна, новая эпоха означала бы вторую
-     * покупку.
-     *
-     * Инкремент в самой базе, а не чтение-плюс-запись: два воркера иначе
-     * прочитали бы одно значение и получили одинаковый request_id.
-     */
-    public function bumpDeliveryEpoch(int $orderId): void
-    {
-        $this->db->table('orders')->where('id', $orderId)->update([
-            'delivery_epoch' => $this->db->raw('delivery_epoch + 1'),
-            'updated_at' => now(),
-        ]);
     }
 
     /**

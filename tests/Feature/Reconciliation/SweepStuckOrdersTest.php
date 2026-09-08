@@ -7,8 +7,10 @@ namespace Tests\Feature\Reconciliation;
 use App\Domain\Delivery\Actions\DeliverOrder;
 use App\Domain\Delivery\Actions\SweepStuckOrders;
 use App\Domain\Delivery\DTO\DeliveryOutcome;
+use App\Domain\Ordering\Actions\DeriveOrderStatus;
+use App\Domain\Ordering\Enums\OrderItemStatus;
 use App\Domain\Ordering\Enums\OrderStatus;
-use App\Domain\Ordering\StateMachine\OrderStateMachine;
+use App\Domain\Ordering\StateMachine\OrderItemStateMachine;
 use App\Domain\Ordering\StateMachine\TransitionResult;
 use App\Domain\Payments\Actions\ApplyPaymentEvent;
 use App\Jobs\DeliverOrderJob;
@@ -65,7 +67,7 @@ final class SweepStuckOrdersTest extends TestCase
         // которого НЕ НАЧИНАЛАСЬ. А в задании путь другой —
         // delivery_failed → повтор → delivered, и именно он оставался
         // непроверенным, хотя ради него подметальщик и написан.
-        $this->stuckOrderIn(OrderStatus::DeliveryFailed);
+        $this->stuckOrderIn(OrderItemStatus::DeliveryFailed);
 
         self::assertSame(1, app(SweepStuckOrders::class)->execute());
 
@@ -77,7 +79,7 @@ final class SweepStuckOrdersTest extends TestCase
     {
         // Ожидание пополнения — тоже работа подметальщика: склад пополнили,
         // а заказ сам об этом не узнает.
-        $this->stuckOrderIn(OrderStatus::OutOfStock);
+        $this->stuckOrderIn(OrderItemStatus::OutOfStock);
 
         self::assertSame(1, app(SweepStuckOrders::class)->execute());
         Queue::assertPushed(DeliverOrderJob::class, 1);
@@ -90,7 +92,7 @@ final class SweepStuckOrdersTest extends TestCase
         // Проверяется не только исход, но и след в логе: без отдельного
         // события «восстановлен» неотличим от «выдан с первого раза», и
         // посчитать, сколько заказов система вытащила сама, невозможно.
-        $order = $this->stuckOrderIn(OrderStatus::DeliveryFailed);
+        $order = $this->stuckOrderIn(OrderItemStatus::DeliveryFailed);
 
         $events = [];
         Log::listen(static function (MessageLogged $event) use (&$events): void {
@@ -120,8 +122,10 @@ final class SweepStuckOrdersTest extends TestCase
     {
         $order = $this->paidOrderAgedBy(60);
 
-        // Аренда жива — прямо сейчас заказ выдаёт другой воркер.
-        DB::table('orders')->where('id', $order->id)->update([
+        // Аренда жива — прямо сейчас позицию выдаёт другой воркер. Аренда
+        // на ПОЗИЦИИ, а не на заказе: со второго этапа выдача идёт по позициям,
+        // и подметальщик спрашивает именно про них.
+        DB::table('order_items')->where('order_id', $order->id)->update([
             'lease_token' => (string) Str::uuid(),
             'lease_owner' => 'busy-worker',
             'lease_expires_at' => now()->addMinutes(2),
@@ -168,7 +172,7 @@ final class SweepStuckOrdersTest extends TestCase
         $order = $this->paidOrderAgedBy(60);
         app(DeliverOrder::class)->execute($order->public_id);
 
-        DB::table('orders')->where('id', $order->id)->update([
+        DB::table('order_items')->where('order_id', $order->id)->update([
             'lease_token' => null,
             'lease_expires_at' => null,
         ]);
@@ -189,30 +193,36 @@ final class SweepStuckOrdersTest extends TestCase
     /**
      * Заказ, застрявший в тупике, из которого система обязана выбраться сама.
      */
-    private function stuckOrderIn(OrderStatus $status): Order
+    private function stuckOrderIn(OrderItemStatus $status): Order
     {
         $order = $this->paidOrderAgedBy(60);
-        $machine = app(OrderStateMachine::class);
+        $machine = app(OrderItemStateMachine::class);
 
+        // Двигается ПОЗИЦИЯ, а не заказ. Со второго этапа статус заказа —
+        // производный: выставить его напрямую значит собрать состояние,
+        // которого боевой путь никогда не создаёт, и проверять несуществующее.
+        //
         // Переходы делаются в прошлом вместе с оплатой: подметальщик отбирает
-        // работу по ВОЗРАСТУ статуса, и заказ, только что провалившийся,
-        // трогать рано — его повтор уже стоит в очереди.
+        // работу по ВОЗРАСТУ статуса, и позиция, только что провалившаяся,
+        // трогать рано — её повтор уже стоит в очереди.
         $this->travel(-60)->minutes();
 
+        $item = $order->items()->firstOrFail();
+
         // Через delivering, а не напрямую: машина состояний не пускает
-        // paid -> delivery_failed, и это правильно — провалиться можно
-        // только у того, что начиналось. Фикстура обязана ходить теми же
-        // переходами, что и боевой путь, иначе она проверяет несуществующее
-        // состояние.
+        // pending -> delivery_failed, и это правильно — провалиться можно
+        // только у того, что начиналось.
         self::assertSame(
             TransitionResult::Applied,
-            $machine->tryTransition($order, OrderStatus::Delivering, reason: 'fixture'),
+            $machine->tryTransition($item, OrderItemStatus::Delivering, reason: 'fixture'),
         );
 
         self::assertSame(
             TransitionResult::Applied,
-            $machine->tryTransition($order->refresh(), $status, reason: 'fixture'),
+            $machine->tryTransition($item, $status, reason: 'fixture'),
         );
+
+        app(DeriveOrderStatus::class)->execute($order->refresh());
 
         $this->travelBack();
 

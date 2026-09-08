@@ -39,19 +39,19 @@ final class OrderResource extends JsonResource
             'amount_minor' => $order->amount_minor,
             'currency' => $order->currency,
             'payment_state' => $order->paymentState?->state->value,
+            // Код отдаётся ПО ПОЗИЦИЯМ. Верхнеуровневого delivery больше нет:
+            // выдач у заказа столько же, сколько позиций, и отдавать «какую-то
+            // одну» значит показывать покупателю чужой код из его же заказа.
             'items' => $order->items->map(static fn (OrderItem $item): array => [
                 'line_no' => $item->line_no,
                 'sku' => $item->sku,
                 'product_name' => $item->product->name,
                 'amount_minor' => $item->unit_amount_minor,
                 'status' => $item->status->value,
+                // Код появляется только когда он действительно выдан.
+                'code' => $item->delivery?->code_encrypted,
+                'delivered_at' => $item->delivered_at?->toIso8601String(),
             ])->all(),
-            // Код отдаётся только когда он действительно выдан. До этого поля нет,
-            // а не null: отсутствие поля читается однозначно.
-            'delivery' => $order->delivery === null ? null : [
-                'code' => $order->delivery->code_encrypted,
-                'delivered_at' => $order->delivered_at?->toIso8601String(),
-            ],
             'created_at' => $order->created_at->toIso8601String(),
         ];
     }

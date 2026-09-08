@@ -35,10 +35,6 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property int $amount_minor
  * @property string $currency
  * @property OrderStatus $status
- * @property string|null $lease_token
- * @property CarbonImmutable|null $lease_expires_at
- * @property string|null $lease_owner
- * @property int $delivery_epoch
  * @property int $restock_waits
  * @property CarbonImmutable $status_changed_at
  * @property CarbonImmutable $next_action_at
@@ -51,7 +47,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property CarbonImmutable $updated_at
  * @property-read Product $product
  * @property-read Collection<int, OrderItem> $items
- * @property-read Delivery|null $delivery
+ * @property-read Collection<int, Delivery> $deliveries
  * @property-read OrderPaymentState|null $paymentState
  */
 final class Order extends Model
@@ -59,8 +55,11 @@ final class Order extends Model
     protected $table = 'orders';
 
     /**
-     * Аренда, эпоха и статус НЕ заполняются массово: их двигают только условные
-     * UPDATE с проверкой предусловия, иначе теряется смысл fencing-токена.
+     * Статус НЕ заполняется массово: его двигают только условные UPDATE
+     * с проверкой предусловия.
+     *
+     * Аренда и эпоха выдачи с заказа ушли: со второго этапа они принадлежат
+     * позиции, потому что позиции выдаются независимо друг от друга.
      *
      * @var list<string>
      */
@@ -93,14 +92,18 @@ final class Order extends Model
     }
 
     /**
-     * Ровно одна выдача на заказ — это держит индекс deliveries_order_uq,
-     * поэтому связь hasOne, а не hasMany.
+     * Выдачи заказа — по одной на позицию.
      *
-     * @return HasOne<Delivery, $this>
+     * Была hasOne, пока товар в заказе был один. Оставить её значило бы
+     * возвращать ПРОИЗВОЛЬНУЮ из нескольких выдач: Eloquent взял бы первую
+     * попавшуюся, и покупатель в ответе API видел бы чужой код из своего же
+     * заказа. Один-к-одному теперь у позиции, где его и держит индекс.
+     *
+     * @return HasMany<Delivery, $this>
      */
-    public function delivery(): HasOne
+    public function deliveries(): HasMany
     {
-        return $this->hasOne(Delivery::class, 'order_id');
+        return $this->hasMany(Delivery::class, 'order_id');
     }
 
     /**
@@ -133,11 +136,9 @@ final class Order extends Model
         return [
             'product_id' => 'integer',
             'amount_minor' => 'integer',
-            'delivery_epoch' => 'integer',
             'restock_waits' => 'integer',
             'needs_review' => 'boolean',
             'status' => OrderStatus::class,
-            'lease_expires_at' => 'immutable_datetime',
             'status_changed_at' => 'immutable_datetime',
             'next_action_at' => 'immutable_datetime',
             'paid_at' => 'immutable_datetime',

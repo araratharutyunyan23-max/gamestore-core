@@ -6,6 +6,8 @@ namespace Tests\Race;
 
 use Illuminate\Foundation\Testing\DatabaseTruncation;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Pool;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 use Symfony\Component\Process\Process;
@@ -54,6 +56,31 @@ abstract class RaceTestCase extends TestCase
         $this->server = null;
 
         parent::tearDown();
+    }
+
+    /**
+     * Отправить пачку вебхуков ОДНОВРЕМЕННО.
+     *
+     * Живёт в базовом классе, потому что нужен уже нескольким состязательным
+     * тестам. Копия в каждом расходилась бы по таймауту и по обработке
+     * ответов — а именно от этих деталей зависит, настоящая ли тут гонка.
+     *
+     * @param  list<array<string, mixed>>  $payloads
+     * @return array<int, int> код ответа => сколько раз встретился
+     */
+    protected function fireParallel(array $payloads): array
+    {
+        $url = $this->baseUrl().'/api/v1/webhooks/payment';
+
+        /** @var array<int, Response> $responses */
+        $responses = Http::pool(static fn (Pool $pool): array => array_map(
+            static fn (array $payload) => $pool->acceptJson()->timeout(30)->post($url, $payload),
+            $payloads,
+        ));
+
+        $statuses = array_map(static fn (Response $r): int => $r->status(), array_values($responses));
+
+        return array_count_values($statuses);
     }
 
     protected function baseUrl(): string

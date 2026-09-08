@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Domain\Delivery\Actions;
 
 use App\Domain\Delivery\DTO\DeliveryOutcome;
+use App\Domain\Delivery\DTO\DeliveryTarget;
 use App\Domain\Delivery\DTO\RequestId;
 use App\Domain\Delivery\Enums\AttemptOutcome;
 use App\Domain\Delivery\Enums\CallOutcome;
@@ -12,8 +13,7 @@ use App\Domain\Delivery\Enums\SupplierName;
 use App\Domain\Delivery\Repositories\DeliveryAttemptRepository;
 use App\Domain\Delivery\Repositories\SupplierCodeRepository;
 use App\Domain\Delivery\Suppliers\SupplierRegistry;
-use App\Domain\Ordering\Repositories\OrderRepository;
-use App\Models\Order;
+use App\Domain\Ordering\Repositories\OrderItemRepository;
 use App\Support\Cfg;
 use App\Support\StructuredLog;
 use Illuminate\Support\Sleep;
@@ -44,13 +44,13 @@ final readonly class ResolveSupplierAttempt
         private SupplierRegistry $suppliers,
         private DeliveryAttemptRepository $attempts,
         private SupplierCodeRepository $codes,
-        private OrderRepository $orders,
+        private OrderItemRepository $items,
     ) {}
 
     /**
      * @return array{outcome: DeliveryOutcome, code: ?string, request_id: ?string, supplier: ?SupplierName}
      */
-    public function resolve(Order $order, SupplierName $supplier, RequestId $requestId, int $attemptId): array
+    public function resolve(DeliveryTarget $target, SupplierName $supplier, RequestId $requestId, int $attemptId): array
     {
         $gateway = $this->suppliers->get($supplier);
 
@@ -61,7 +61,7 @@ final readonly class ResolveSupplierAttempt
 
         StructuredLog::supplier(
             'supplier_probe',
-            $order->public_id,
+            $target->orderPublicId,
             $supplier,
             $requestId,
             outcome: $probe->outcome->value,
@@ -75,7 +75,7 @@ final readonly class ResolveSupplierAttempt
 
             StructuredLog::supplier(
                 'supplier_unknown_resolved',
-                $order->public_id,
+                $target->orderPublicId,
                 $supplier,
                 $requestId,
                 outcome: 'issued',
@@ -105,7 +105,7 @@ final readonly class ResolveSupplierAttempt
 
         StructuredLog::supplier(
             'supplier_seal',
-            $order->public_id,
+            $target->orderPublicId,
             $supplier,
             $requestId,
             outcome: $seal->outcome->value,
@@ -131,7 +131,7 @@ final readonly class ResolveSupplierAttempt
 
             // Печать — доказательство отсутствия выдачи, значит эпоху двигать
             // можно и нужно: следующий request_id обязан быть другим.
-            $this->orders->bumpDeliveryEpoch($order->id);
+            $this->items->bumpDeliveryEpoch($target->itemId);
 
             return $this->exhausted();
         }

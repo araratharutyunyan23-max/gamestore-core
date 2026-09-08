@@ -217,14 +217,14 @@ parameters:
 | внешний id заказа уникален | `orders_public_id_uq` |
 | повторный вебхук ничего не меняет | `payment_events_event_id_uq` |
 | 50 вебхуков с **разными** `event_id` дают одну проводку | `payment_events_one_applied_paid_uq` |
-| товар выдаётся ровно один раз | `deliveries_order_uq` |
+| каждый товар заказа выдаётся ровно один раз | `deliveries_order_item_uq` |
 | один код не уйдёт в два заказа | `deliveries_code_hash_uq` |
 | ключ из пула не уйдёт в два заказа | `deliveries_license_key_uq`, `license_keys_delivery_uq` |
 | один код существует в пуле один раз | `license_keys_code_hash_uq` |
-| **таймаут не открывает путь ко второму поставщику** | `delivery_attempts_one_open_uq` |
-| повтор после таймаута не создаёт вторую выдачу | `delivery_attempts_one_success_uq` |
+| **таймаут не открывает путь ко второму поставщику** | `delivery_attempts_item_open_uq` |
+| повтор после таймаута не создаёт вторую выдачу | `delivery_attempts_item_success_uq` |
 | один вызов учитывается один раз | `delivery_attempts_request_uq` |
-| одна попытка на (заказ, поставщик, эпоха) | `delivery_attempts_epoch_uq` |
+| одна попытка на (позиция, поставщик, эпоха) | `delivery_attempts_item_epoch_uq` |
 | купленный код не теряется и не задваивается | `supplier_issued_codes_request_uq`, `supplier_issued_codes_hash_uq` |
 | деньги не проводятся дважды | `ledger_transactions_idempotency_uq` |
 | повторная проводка не удваивает остатки | `ledger_entries_pair_uq` |
@@ -322,7 +322,7 @@ parameters:
 
 ### 5.6. Ошибки, которые не ошибки
 
-- `23505` по `deliveries_order_uq` — это **«уже выдано»**, а не сбой: перечитать и вернуть
+- `23505` по `deliveries_order_item_uq` — это **«эта позиция уже выдана»**, а не сбой: перечитать и вернуть
   существующий код. Никогда не переводить заказ в `delivery_failed` по этому коду.
 - `catch (UniqueConstraintViolationException)` — **только снаружи** `DB::transaction`.
   После `23505` транзакция PostgreSQL в состоянии abort, любой следующий запрос вернёт `25P02`.

@@ -6,6 +6,7 @@ namespace Tests\Feature\Delivery;
 
 use App\Domain\Delivery\Actions\DeliverOrder;
 use App\Domain\Delivery\DTO\DeliveryOutcome;
+use App\Domain\Ordering\Enums\OrderItemStatus;
 use App\Domain\Ordering\Enums\OrderStatus;
 use App\Domain\Payments\Actions\ApplyPaymentEvent;
 use App\Domain\Payments\Enums\PaymentEventState;
@@ -45,18 +46,37 @@ final class StaleReadRegressionTest extends TestCase
         Queue::fake();
     }
 
+    /**
+     * Поставить аренду на позицию и перевести её в выдачу.
+     *
+     * Статус позиции двигается вместе с арендой: воркер, взявший аренду,
+     * первым делом переводит позицию в delivering, и фикстура обязана
+     * воспроизводить именно это состояние, а не половину его.
+     */
+    private function holdItemLease(Order $order, string $owner, \DateTimeInterface $expiresAt): void
+    {
+        DB::table('order_items')->where('order_id', $order->id)->update([
+            'status' => OrderItemStatus::Delivering->value,
+            'lease_token' => (string) Str::uuid(),
+            'lease_owner' => $owner,
+            'lease_expires_at' => $expiresAt,
+        ]);
+
+        DB::table('orders')->where('id', $order->id)->update([
+            'status' => OrderStatus::Delivering->value,
+        ]);
+    }
+
     #[Test]
     public function a_worker_holding_the_lease_keeps_everyone_else_out(): void
     {
         $order = $this->paidOrder();
 
         // Другой воркер уже взял аренду и ведёт выдачу прямо сейчас.
-        DB::table('orders')->where('id', $order->id)->update([
-            'status' => OrderStatus::Delivering->value,
-            'lease_token' => (string) Str::uuid(),
-            'lease_owner' => 'other-worker',
-            'lease_expires_at' => now()->addMinutes(2),
-        ]);
+        // Аренда со второго этапа живёт на ПОЗИЦИИ: две позиции одного заказа
+        // выдаются независимо, и общая аренда на заказ означала бы, что один
+        // залипший поставщик держит весь заказ.
+        $this->holdItemLease($order, 'other-worker', now()->addMinutes(2));
 
         $outcome = app(DeliverOrder::class)->execute($order->public_id);
 
@@ -74,12 +94,7 @@ final class StaleReadRegressionTest extends TestCase
         $order = $this->paidOrder();
 
         // Воркер упал во время выдачи: статус остался delivering, аренда протухла.
-        DB::table('orders')->where('id', $order->id)->update([
-            'status' => OrderStatus::Delivering->value,
-            'lease_token' => (string) Str::uuid(),
-            'lease_owner' => 'dead-worker',
-            'lease_expires_at' => now()->subMinute(),
-        ]);
+        $this->holdItemLease($order, 'dead-worker', now()->subMinute());
 
         $outcome = app(DeliverOrder::class)->execute($order->public_id);
 
@@ -90,8 +105,8 @@ final class StaleReadRegressionTest extends TestCase
         self::assertSame(1, DB::table('deliveries')->where('order_id', $order->id)->count());
         self::assertSame(OrderStatus::Delivered, $order->refresh()->status);
 
-        // Аренда снята: заказ не остаётся заблокированным после успеха.
-        self::assertNull(DB::table('orders')->where('id', $order->id)->value('lease_token'));
+        // Аренда снята: позиция не остаётся заблокированной после успеха.
+        self::assertNull(DB::table('order_items')->where('order_id', $order->id)->value('lease_token'));
     }
 
     #[Test]

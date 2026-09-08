@@ -420,6 +420,10 @@ components:
     Order:
       type: object
       required: [id, status, sku, amount_minor, currency, items, created_at]
+      description: |
+        Выданные коды лежат В ПОЗИЦИЯХ, а не в самом заказе. Отдельного поля
+        `delivery` у заказа больше нет: выдач у него столько же, сколько
+        позиций, и «какая-то одна из них» — не контракт, а лотерея.
       properties:
         id:
           type: string
@@ -452,17 +456,11 @@ components:
           description: |
             Состояние оплаты отдельно от статуса заказа. Поздняя отмена платежа
             обязана стать правдой о деньгах, но не отменяет уже выданный код.
-        delivery:
-          type: [object, "null"]
-          description: null, пока код не выдан
-          properties:
-            code: { type: string, example: LFXC-TNCS-BPCD }
-            delivered_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
 
     OrderItem:
       type: object
-      required: [line_no, sku, product_name, amount_minor, status]
+      required: [line_no, sku, product_name, amount_minor, status, code, delivered_at]
       properties:
         line_no:
           type: integer
@@ -472,6 +470,17 @@ components:
         product_name: { type: string, example: CS2 Prime Status ключ }
         amount_minor: { type: integer, example: 129000 }
         status: { $ref: "#/components/schemas/OrderItemStatus" }
+        code:
+          type: [string, "null"]
+          description: |
+            Выданный код. `null`, пока позиция не выдана — поле присутствует
+            всегда, чтобы отсутствие кода читалось однозначно, а не как
+            забытое поле.
+          example: LFXC-TNCS-BPCD
+        delivered_at:
+          type: [string, "null"]
+          format: date-time
+          description: Момент выдачи этой позиции; `null`, пока не выдана.
 
     OrderItemStatus:
       type: string

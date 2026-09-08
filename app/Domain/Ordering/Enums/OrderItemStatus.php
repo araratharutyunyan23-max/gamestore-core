@@ -63,6 +63,47 @@ enum OrderItemStatus: string
     }
 
     /**
+     * Разрешённые переходы позиции.
+     *
+     * Список тот же по духу, что у заказа, с одним добавлением: из тупиков
+     * (`out_of_stock`, `delivery_failed`) есть выход не только назад в выдачу,
+     * но и в `refunded` — за невыданную позицию деньги возвращаются, и это
+     * штатное завершение, а не авария.
+     *
+     * Обратной дороги из `refunded` нет: деньги уже вернули, и выдать по такой
+     * позиции товар означало бы отдать его бесплатно.
+     */
+    public function canTransitionTo(self $target): bool
+    {
+        if ($this === $target || $this->isFinal()) {
+            return false;
+        }
+
+        return match ($this) {
+            self::Pending => in_array($target, [self::Delivering, self::Cancelled], true),
+            self::Delivering => in_array(
+                $target,
+                [self::Delivered, self::OutOfStock, self::DeliveryFailed, self::Cancelled],
+                true,
+            ),
+            self::OutOfStock, self::DeliveryFailed => in_array(
+                $target,
+                [self::Delivering, self::Refunded, self::Cancelled],
+                true,
+            ),
+            self::Delivered, self::Refunded, self::Cancelled => false,
+        };
+    }
+
+    /**
+     * @return list<self>
+     */
+    public static function awaitingDelivery(): array
+    {
+        return array_values(array_filter(self::cases(), static fn (self $s): bool => $s->awaitsDelivery()));
+    }
+
+    /**
      * @return list<string>
      */
     public static function values(): array

@@ -7,8 +7,6 @@ namespace Tests\Race;
 use App\Domain\Ordering\Enums\OrderStatus;
 use App\Domain\Payments\Actions\DrainUnappliedPayments;
 use App\Models\Order;
-use Illuminate\Http\Client\Pool;
-use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\Test;
@@ -164,25 +162,6 @@ final class ParallelWebhookTest extends RaceTestCase
 
         self::assertSame(OrderStatus::Delivered, $order->status);
         $this->assertDeliveredExactlyOnce($order);
-    }
-
-    /**
-     * @param  list<array<string, mixed>>  $payloads
-     * @return array<int, int> код ответа => сколько раз встретился
-     */
-    private function fireParallel(array $payloads): array
-    {
-        $url = $this->baseUrl().'/api/v1/webhooks/payment';
-
-        /** @var array<int, Response> $responses */
-        $responses = Http::pool(static fn (Pool $pool): array => array_map(
-            static fn (array $payload) => $pool->acceptJson()->timeout(30)->post($url, $payload),
-            $payloads,
-        ));
-
-        $statuses = array_map(static fn (Response $r): int => $r->status(), array_values($responses));
-
-        return array_count_values($statuses);
     }
 
     private function assertDeliveredExactlyOnce(Order $order): void

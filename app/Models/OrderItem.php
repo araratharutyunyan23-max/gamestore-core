@@ -9,6 +9,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * Позиция заказа — единица выдачи и единица денег.
@@ -45,6 +46,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property CarbonImmutable $updated_at
  * @property-read Order $order
  * @property-read Product $product
+ * @property-read Delivery|null $delivery
  */
 final class OrderItem extends Model
 {
@@ -75,6 +77,18 @@ final class OrderItem extends Model
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class, 'product_id');
+    }
+
+    /**
+     * Ровно одна выдача на позицию — это держит индекс deliveries_order_item_uq,
+     * поэтому связь hasOne, а не hasMany. У ЗАКАЗА такой связи больше нет:
+     * выдач у него столько же, сколько позиций.
+     *
+     * @return HasOne<Delivery, $this>
+     */
+    public function delivery(): HasOne
+    {
+        return $this->hasOne(Delivery::class, 'order_item_id');
     }
 
     /**

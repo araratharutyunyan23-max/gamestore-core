@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Domain\Delivery\Actions;
 
 use App\Domain\Delivery\DTO\DeliveryOutcome;
+use App\Domain\Delivery\DTO\DeliveryTarget;
 use App\Domain\Delivery\DTO\IssueRequest;
 use App\Domain\Delivery\DTO\RequestId;
 use App\Domain\Delivery\DTO\SupplierResponse;
@@ -14,8 +15,7 @@ use App\Domain\Delivery\Enums\SupplierName;
 use App\Domain\Delivery\Repositories\DeliveryAttemptRepository;
 use App\Domain\Delivery\Repositories\SupplierCodeRepository;
 use App\Domain\Delivery\Suppliers\SupplierRegistry;
-use App\Domain\Ordering\Repositories\OrderRepository;
-use App\Models\Order;
+use App\Domain\Ordering\Repositories\OrderItemRepository;
 use App\Support\Cfg;
 use App\Support\StructuredLog;
 
@@ -45,19 +45,19 @@ final readonly class DeliverViaSupplier
         private DeliveryAttemptRepository $attempts,
         private SupplierCodeRepository $codes,
         private ResolveSupplierAttempt $resolver,
-        private OrderRepository $orders,
+        private OrderItemRepository $items,
     ) {}
 
     /**
      * @return array{outcome: DeliveryOutcome, code: ?string, request_id: ?string, supplier: ?SupplierName}
      */
-    public function execute(Order $order): array
+    public function execute(DeliveryTarget $target): array
     {
         $supplier = SupplierName::primary();
-        $epoch = $order->delivery_epoch;
+        $epoch = $target->deliveryEpoch;
 
         while (true) {
-            $result = $this->trySupplier($order, $supplier, $epoch);
+            $result = $this->trySupplier($target, $supplier, $epoch);
 
             if ($result['outcome'] !== DeliveryOutcome::SupplierExhausted) {
                 return $result;
@@ -71,9 +71,9 @@ final readonly class DeliverViaSupplier
 
             StructuredLog::supplier(
                 'supplier_failover',
-                $order->public_id,
+                $target->orderPublicId,
                 $supplier,
-                RequestId::for($order->public_id, $supplier, $epoch),
+                RequestId::for($target->orderPublicId, $target->lineNo, $supplier, $epoch),
                 outcome: 'exhausted',
                 reason: 'fallback_to:'.$next->value,
             );
@@ -89,21 +89,21 @@ final readonly class DeliverViaSupplier
     /**
      * @return array{outcome: DeliveryOutcome, code: ?string, request_id: ?string, supplier: ?SupplierName}
      */
-    private function trySupplier(Order $order, SupplierName $supplier, int $epoch): array
+    private function trySupplier(DeliveryTarget $target, SupplierName $supplier, int $epoch): array
     {
-        $requestId = RequestId::for($order->public_id, $supplier, $epoch);
+        $requestId = RequestId::for($target->orderPublicId, $target->lineNo, $supplier, $epoch);
         $gateway = $this->suppliers->get($supplier);
 
         // Шаг 1: намерение фиксируется до вызова и переживает падение процесса.
-        $attemptId = $this->attempts->begin($order->id, $supplier, $requestId, $epoch, StructuredLog::traceId());
+        $attemptId = $this->attempts->begin($target, $supplier, $requestId, $epoch, StructuredLog::traceId());
 
-        StructuredLog::supplier('supplier_call', $order->public_id, $supplier, $requestId);
+        StructuredLog::supplier('supplier_call', $target->orderPublicId, $supplier, $requestId);
 
         // Шаг 2: вызов вне транзакции.
-        $response = $gateway->issue(new IssueRequest($requestId->value, $order->sku, $order->public_id));
+        $response = $gateway->issue(new IssueRequest($requestId->value, $target->sku, $target->orderPublicId));
 
         if ($response->hasCode()) {
-            return $this->captureCode($order, $supplier, $requestId, $attemptId, $response);
+            return $this->captureCode($target, $supplier, $requestId, $attemptId, $response);
         }
 
         if ($response->outcome === CallOutcome::NotIssuedCertain) {
@@ -113,11 +113,11 @@ final readonly class DeliverViaSupplier
             // Эпоха ПЕРСИСТИТСЯ, а не живёт в памяти. Иначе повторная выдача
             // после восстановимого отказа пойдёт с тем же request_id и упрётся
             // в delivery_attempts_request_uq — заказ уже не доведёшь никогда.
-            $this->orders->bumpDeliveryEpoch($order->id);
+            $this->items->bumpDeliveryEpoch($target->itemId);
 
             StructuredLog::supplier(
                 'supplier_refused',
-                $order->public_id,
+                $target->orderPublicId,
                 $supplier,
                 $requestId,
                 outcome: 'not_issued_certain',
@@ -136,7 +136,7 @@ final readonly class DeliverViaSupplier
         if ($response->errorKind === null) {
             StructuredLog::supplier(
                 'supplier_timeout',
-                $order->public_id,
+                $target->orderPublicId,
                 $supplier,
                 $requestId,
                 outcome: 'unknown',
@@ -146,7 +146,7 @@ final readonly class DeliverViaSupplier
         } else {
             StructuredLog::supplier(
                 'supplier_unknown',
-                $order->public_id,
+                $target->orderPublicId,
                 $supplier,
                 $requestId,
                 outcome: 'unknown',
@@ -155,14 +155,14 @@ final readonly class DeliverViaSupplier
             );
         }
 
-        return $this->resolver->resolve($order, $supplier, $requestId, $attemptId);
+        return $this->resolver->resolve($target, $supplier, $requestId, $attemptId);
     }
 
     /**
      * @return array{outcome: DeliveryOutcome, code: ?string, request_id: ?string, supplier: ?SupplierName}
      */
     private function captureCode(
-        Order $order,
+        DeliveryTarget $target,
         SupplierName $supplier,
         RequestId $requestId,
         int $attemptId,
@@ -176,7 +176,7 @@ final readonly class DeliverViaSupplier
 
         StructuredLog::supplier(
             'supplier_issued',
-            $order->public_id,
+            $target->orderPublicId,
             $supplier,
             $requestId,
             outcome: 'issued',

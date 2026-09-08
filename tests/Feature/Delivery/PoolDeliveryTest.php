@@ -44,11 +44,11 @@ final class PoolDeliveryTest extends TestCase
 
         self::assertSame(DeliveryOutcome::Delivered, $this->deliver($order));
 
-        $order->refresh()->load('delivery');
+        $order->refresh()->load('items.delivery');
         self::assertSame(OrderStatus::Delivered, $order->status);
         self::assertNotNull($order->delivered_at);
 
-        $delivery = $order->delivery;
+        $delivery = $order->items->first()?->delivery;
         self::assertNotNull($delivery);
 
         // Код в ответе — расшифрованный, а в базе лежит шифртекст.
@@ -124,7 +124,7 @@ final class PoolDeliveryTest extends TestCase
         $third->refresh();
         self::assertSame(OrderStatus::OutOfStock, $third->status);
         self::assertTrue($third->status->isRecoverable(), 'Пустой остаток обязан быть восстановимым состоянием.');
-        self::assertNull($third->delivery);
+        self::assertNull($third->items->first()?->delivery);
     }
 
     #[Test]
