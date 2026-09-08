@@ -223,6 +223,7 @@ parameters:
 | деньги за позицию не возвращаются дважды | `ledger_transactions_idempotency_uq` по `item_refunded:{заказ}#{строка}` |
 | код от поставщика не приходит дважды | `supplier_issued_codes_hash_uq` |
 | квота поставщика не превышается | скользящее окно в Redis, атомарный Lua |
+| история переходов не переписывается | `order_status_transitions_immutable`, `order_item_status_transitions_immutable` |
 | один код не уйдёт в два заказа | `deliveries_code_hash_uq` |
 | ключ из пула не уйдёт в два заказа | `deliveries_license_key_uq`, `license_keys_delivery_uq` |
 | один код существует в пуле один раз | `license_keys_code_hash_uq` |
