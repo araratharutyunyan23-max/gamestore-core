@@ -102,10 +102,11 @@ final readonly class HttpSupplierClient implements SupplierGateway
         $kind = $this->stringOrNull($envelope['status'] ?? null);
         $reason = $this->stringOrNull($envelope['reason'] ?? null);
         $code = $this->stringOrNull($envelope['code'] ?? null);
+        $sku = $this->stringOrNull($envelope['sku'] ?? null);
 
         // Успех и выдача.
         if ($status === 200 && ($kind === 'ok' || $kind === 'issued') && $code !== null) {
-            return new SupplierResponse(CallOutcome::Issued, $code, $status, null, $epoch, $latencyMs);
+            return new SupplierResponse(CallOutcome::Issued, $code, $status, null, $epoch, $latencyMs, $sku);
         }
 
         if ($status === 200 && $kind === 'in_flight') {
