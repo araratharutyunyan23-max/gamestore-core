@@ -6,10 +6,12 @@ namespace App\Domain\Ordering\Repositories;
 
 use App\Domain\Ordering\DTO\DeliveryLease;
 use App\Domain\Ordering\Enums\OrderStatus;
+use App\Domain\Ordering\Exceptions\MixedCurrencyOrder;
 use App\Models\Order;
 use App\Models\Product;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Support\Carbon;
 
 /**
  * Весь доступ к заказам.
@@ -25,7 +27,7 @@ final readonly class OrderRepository
     public function findByPublicId(string $publicId): ?Order
     {
         return Order::query()
-            ->with(['product', 'delivery', 'paymentState'])
+            ->with(['product', 'delivery', 'paymentState', 'items.product'])
             ->where('public_id', $publicId)
             ->first();
     }
@@ -33,7 +35,7 @@ final readonly class OrderRepository
     public function findByIdempotencyKey(string $key): ?Order
     {
         return Order::query()
-            ->with(['product', 'delivery', 'paymentState'])
+            ->with(['product', 'delivery', 'paymentState', 'items.product'])
             ->where('idempotency_key', $key)
             ->first();
     }
@@ -53,7 +55,7 @@ final readonly class OrderRepository
     public function lockById(int $id): ?Order
     {
         return Order::query()
-            ->with(['product', 'delivery', 'paymentState'])
+            ->with(['product', 'delivery', 'paymentState', 'items.product'])
             ->where('id', $id)
             ->lock('for no key update')
             ->first();
@@ -89,17 +91,69 @@ final readonly class OrderRepository
      * конкурент успел первым с тем же ключом, и это штатный исход повторной
      * отправки — обрабатывается вызывающим кодом.
      */
-    public function create(string $publicId, string $idempotencyKey, Product $product): void
+    /**
+     * Создать заказ вместе с позициями.
+     *
+     * Одной транзакцией, потому что заказ без позиций — это оплаченный заказ,
+     * в котором нечего выдавать. Сумма заказа обязана равняться сумме позиций,
+     * и это держит отложенный триггер order_items_total_matches: он проверяет
+     * равенство на коммите, когда все строки уже на месте.
+     *
+     * @param  non-empty-list<Product>  $products
+     *
+     * @throws MixedCurrencyOrder
+     */
+    public function create(string $publicId, string $idempotencyKey, array $products): void
     {
-        Order::query()->create([
-            'public_id' => $publicId,
-            'idempotency_key' => $idempotencyKey,
-            'product_id' => $product->id,
-            // Цена и SKU фиксируются снимком: каталог меняется, история — нет.
-            'sku' => $product->sku,
-            'amount_minor' => $product->price_minor,
-            'currency' => $product->currency,
-        ]);
+        $currencies = array_values(array_unique(array_map(
+            static fn (Product $product): string => $product->currency,
+            $products,
+        )));
+
+        if (count($currencies) > 1) {
+            throw MixedCurrencyOrder::of($currencies);
+        }
+
+        $total = array_sum(array_map(
+            static fn (Product $product): int => $product->price_minor,
+            $products,
+        ));
+
+        $this->db->transaction(function () use ($publicId, $idempotencyKey, $products, $currencies, $total): void {
+            $order = Order::query()->create([
+                'public_id' => $publicId,
+                'idempotency_key' => $idempotencyKey,
+                // Снимок ПЕРВОЙ позиции. Колонки остаются ради кода первого
+                // этапа; источник истины о товарах — order_items.
+                'product_id' => $products[0]->id,
+                'sku' => $products[0]->sku,
+                'amount_minor' => $total,
+                'currency' => $currencies[0],
+            ]);
+
+            // Одной вставкой, а не строкой на позицию: заказ из десяти товаров
+            // не имеет права стоить десять round-trip до базы.
+            $now = Carbon::now();
+            $rows = [];
+            $lineNo = 0;
+
+            foreach ($products as $product) {
+                $lineNo++;
+                $rows[] = [
+                    'order_id' => $order->id,
+                    'product_id' => $product->id,
+                    'line_no' => $lineNo,
+                    // Цена и SKU фиксируются снимком: каталог меняется, история — нет.
+                    'sku' => $product->sku,
+                    'unit_amount_minor' => $product->price_minor,
+                    'currency' => $product->currency,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+            }
+
+            $this->db->table('order_items')->insert($rows);
+        });
     }
 
     /**

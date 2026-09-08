@@ -138,17 +138,45 @@ final class OrderApiTest extends TestCase
     }
 
     #[Test]
-    public function reading_an_order_costs_a_constant_number_of_queries(): void
+    public function reading_an_order_costs_the_same_regardless_of_how_many_items_it_has(): void
     {
-        $created = $this->withHeader('Idempotency-Key', 'key-nplus1')
-            ->postJson('/api/v1/orders', ['sku' => 'KEY-EFT']);
+        // Раньше здесь стояло «не больше четырёх запросов». Константа проверяет
+        // не то: она ловит момент, когда запросов стало больше, но ничего не
+        // говорит о том, растёт ли их число ВМЕСТЕ С ЗАКАЗОМ. А N+1 — это
+        // именно рост, и со второго этапа расти есть чему: позиций в заказе
+        // теперь много, и у каждой свой товар.
+        $one = $this->countQueriesReadingOrder(['KEY-EFT']);
+        $many = $this->countQueriesReadingOrder([
+            'KEY-CS2-PRIME', 'KEY-EFT', 'STEAM-TOPUP-500', 'SUB-DISCORD-1M', 'SUB-YT-3M',
+        ]);
 
-        /** @var string $publicId */
-        $publicId = $created->json('data.id');
+        self::assertSame(
+            $one,
+            $many,
+            "Заказ из одной позиции стоил {$one} запросов, из пяти — {$many}. Это N+1.",
+        );
+
+        // И заодно нижняя граница разумности: связи подгружаются заранее,
+        // поэтому чтение укладывается в единицы запросов, а не в десятки.
+        self::assertLessThanOrEqual(8, $many, "Чтение заказа стоило {$many} запросов.");
+    }
+
+    /**
+     * @param  non-empty-list<string>  $skus
+     */
+    private function countQueriesReadingOrder(array $skus): int
+    {
+        $created = $this->withHeader('Idempotency-Key', 'key-nplus1-'.count($skus))
+            ->postJson('/api/v1/orders', [
+                'items' => array_map(static fn (string $sku): array => ['sku' => $sku], $skus),
+            ])->assertCreated();
 
         // Идентификатор берётся из ответа, а не пишется константой: последова-
         // тельность в PostgreSQL не откатывается вместе с тестовой транзакцией,
         // поэтому номер заказа меняется от прогона к прогону.
+        /** @var string $publicId */
+        $publicId = $created->json('data.id');
+
         $queries = 0;
         DB::listen(static function () use (&$queries): void {
             $queries++;
@@ -156,8 +184,6 @@ final class OrderApiTest extends TestCase
 
         $this->getJson("/api/v1/orders/{$publicId}")->assertOk();
 
-        // Товар, выдача и состояние оплаты подгружаются заранее: чтение заказа
-        // не имеет права стоить N запросов (CLAUDE.md §4).
-        self::assertLessThanOrEqual(4, $queries, "Чтение заказа стоило {$queries} запросов.");
+        return $queries;
     }
 }

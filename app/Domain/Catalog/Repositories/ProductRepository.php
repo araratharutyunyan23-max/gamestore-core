@@ -18,12 +18,46 @@ final class ProductRepository
      */
     public function purchasableBySku(string $sku): Product
     {
-        $product = Product::query()->where('sku', $sku)->first();
+        return $this->purchasableBySkus([$sku])[0];
+    }
 
-        if ($product === null || ! $product->is_active) {
-            throw ProductNotPurchasable::sku($sku);
+    /**
+     * Товары для списка SKU — ОДНИМ запросом.
+     *
+     * Заказ из десяти позиций не имеет права стоить десять выборок каталога:
+     * это тот самый N+1, запрещённый CLAUDE.md §4, и растёт он ровно там, где
+     * дороже всего — на создании заказа.
+     *
+     * Порядок результата повторяет порядок аргумента, а не порядок базы:
+     * номера строк заказа обязаны совпасть с тем, что прислал покупатель.
+     * Повторяющийся SKU разрешён — две одинаковые позиции это два разных
+     * товара к выдаче, а не ошибка ввода.
+     *
+     * @param  non-empty-list<string>  $skus
+     * @return non-empty-list<Product>
+     *
+     * @throws ProductNotPurchasable
+     */
+    public function purchasableBySkus(array $skus): array
+    {
+        $found = Product::query()
+            ->whereIn('sku', array_values(array_unique($skus)))
+            ->where('is_active', true)
+            ->get()
+            ->keyBy('sku');
+
+        $ordered = [];
+
+        foreach ($skus as $sku) {
+            $product = $found->get($sku);
+
+            if (! $product instanceof Product) {
+                throw ProductNotPurchasable::sku($sku);
+            }
+
+            $ordered[] = $product;
         }
 
-        return $product;
+        return $ordered;
     }
 }

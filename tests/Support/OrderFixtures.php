@@ -20,7 +20,21 @@ trait OrderFixtures
         $this->fixtureSequence++;
 
         return app(CreateOrder::class)->execute(
-            new CreateOrderCommand($sku, "fixture-key-{$this->fixtureSequence}"),
+            CreateOrderCommand::forSku($sku, "fixture-key-{$this->fixtureSequence}"),
+        );
+    }
+
+    /**
+     * Заказ из нескольких позиций.
+     *
+     * @param  non-empty-list<string>  $skus
+     */
+    private function makeMultiOrder(array $skus): Order
+    {
+        $this->fixtureSequence++;
+
+        return app(CreateOrder::class)->execute(
+            CreateOrderCommand::forSkus($skus, "fixture-multi-{$this->fixtureSequence}"),
         );
     }
 

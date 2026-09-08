@@ -21,9 +21,24 @@ final class CreateOrderRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'sku' => ['required', 'string', 'max:64'],
+            // Оба тела валидны: {"sku": "..."} и {"items": [{"sku": "..."}]}.
+            // Старая форма остаётся не из вежливости — контракт первого этапа
+            // уже описан в OpenAPI и по нему уже интегрировались.
+            'sku' => ['required_without:items', 'prohibits:items', 'string', 'max:64'],
+            'items' => ['required_without:sku', 'array', 'min:1', 'max:'.self::MAX_ITEMS],
+            'items.*.sku' => ['required', 'string', 'max:64'],
         ];
     }
+
+    /**
+     * Потолок позиций в заказе.
+     *
+     * Не вкусовщина: список без границы означает, что один запрос может
+     * попросить выдать десять тысяч кодов, и заказ станет и денежной, и
+     * нагрузочной проблемой одновременно. Двадцать — с запасом для витрины,
+     * где корзина собирается руками.
+     */
+    private const MAX_ITEMS = 20;
 
     public function withValidator(Validator $validator): void
     {
@@ -53,9 +68,18 @@ final class CreateOrderRequest extends FormRequest
 
     public function toCommand(): CreateOrderCommand
     {
-        return new CreateOrderCommand(
-            sku: $this->string('sku')->toString(),
-            idempotencyKey: (string) $this->idempotencyKey(),
+        $key = (string) $this->idempotencyKey();
+
+        if (! $this->has('items')) {
+            return CreateOrderCommand::forSku($this->string('sku')->toString(), $key);
+        }
+
+        /** @var list<array{sku: string}> $items */
+        $items = $this->array('items');
+
+        return CreateOrderCommand::forSkus(
+            array_map(static fn (array $item): string => $item['sku'], $items),
+            $key,
         );
     }
 

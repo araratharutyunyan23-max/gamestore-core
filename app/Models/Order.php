@@ -7,12 +7,20 @@ namespace App\Models;
 use App\Domain\Ordering\Enums\OrderStatus;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
- * Заказ. Одна позиция, quantity = 1 (CLAUDE.md §10.1).
+ * Заказ — контейнер позиций и денег.
+ *
+ * До второго этапа товар в заказе был один и лежал прямо здесь (product_id,
+ * sku, amount_minor). Теперь товары живут в order_items, а эти колонки
+ * остаются снимком ПЕРВОЙ позиции: убирать их одновременно с переездом данных
+ * значило бы ломать первый этап и его тесты в том же коммите, что и вводить
+ * новую модель. Сначала данные переезжают, потом колонки исчезают.
  *
  * Никаких методов вида isPaid()/markDelivered(): переходы живут в
  * OrderStateMachine, а фактические записи — в репозитории условными UPDATE.
@@ -42,6 +50,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property CarbonImmutable $created_at
  * @property CarbonImmutable $updated_at
  * @property-read Product $product
+ * @property-read Collection<int, OrderItem> $items
  * @property-read Delivery|null $delivery
  * @property-read OrderPaymentState|null $paymentState
  */
@@ -68,6 +77,19 @@ final class Order extends Model
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class, 'product_id');
+    }
+
+    /**
+     * Позиции заказа в порядке строк.
+     *
+     * Порядок задан явно: без него база вправе вернуть строки как угодно,
+     * и ответ API на два одинаковых запроса отличался бы порядком товаров.
+     *
+     * @return HasMany<OrderItem, $this>
+     */
+    public function items(): HasMany
+    {
+        return $this->hasMany(OrderItem::class, 'order_id')->orderBy('line_no');
     }
 
     /**

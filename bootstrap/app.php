@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Domain\Catalog\Exceptions\ProductNotPurchasable;
 use App\Domain\Ordering\Exceptions\IllegalTransition;
+use App\Domain\Ordering\Exceptions\MixedCurrencyOrder;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -31,6 +32,18 @@ return Application::configure(basePath: dirname(__DIR__))
 
             return response()->json([
                 'error' => 'sku_not_purchasable',
+                'message' => $e->getMessage(),
+            ], 422);
+        });
+
+        // Заказ в двух валютах — ошибка запроса, а не сбой сервера.
+        $exceptions->render(static function (MixedCurrencyOrder $e, Request $request): ?JsonResponse {
+            if (! $request->expectsJson()) {
+                return null;
+            }
+
+            return response()->json([
+                'error' => 'mixed_currency_order',
                 'message' => $e->getMessage(),
             ], 422);
         });
