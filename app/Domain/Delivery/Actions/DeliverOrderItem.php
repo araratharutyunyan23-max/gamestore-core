@@ -9,6 +9,7 @@ use App\Domain\Delivery\DTO\DeliveryOutcome;
 use App\Domain\Delivery\DTO\DeliveryTarget;
 use App\Domain\Delivery\Enums\CodeDisposition;
 use App\Domain\Delivery\Enums\SupplierName;
+use App\Domain\Delivery\RateLimit\SupplierRateLimiter;
 use App\Domain\Delivery\Repositories\DeliveryRepository;
 use App\Domain\Delivery\Repositories\LicenseKeyRepository;
 use App\Domain\Delivery\Repositories\SupplierCodeRepository;
@@ -56,6 +57,7 @@ final readonly class DeliverOrderItem
         private LedgerRepository $ledger,
         private DeliverViaSupplier $supplier,
         private SupplierCodeRepository $codes,
+        private SupplierRateLimiter $rateLimiter,
     ) {}
 
     /**
@@ -194,6 +196,26 @@ final readonly class DeliverOrderItem
      */
     private function deliverFromSupplier(Order $order, OrderItem $item, DeliveryTarget $target): DeliveryOutcome
     {
+        // Квота спрашивается ДО перевода позиции в выдачу. Обратный порядок
+        // оставлял бы позицию в delivering на всё время ожидания окна: снаружи
+        // это неотличимо от «выдача идёт», и заказ выглядел бы работающим,
+        // когда он просто стоит в очереди.
+        $slot = $this->rateLimiter->acquire(SupplierName::primary(), $target->reference());
+
+        if (! $slot->allowed) {
+            // Позиция НЕ теряется: ей назначается время следующей попытки,
+            // и очередь подберёт её сама (ТЗ 3.1).
+            $this->items->deferUntil($item->id, $slot->retryAfterMs);
+
+            StructuredLog::delivery(
+                'delivery_rate_limited',
+                $target->reference(),
+                reason: 'retry_in_ms:'.$slot->retryAfterMs,
+            );
+
+            return DeliveryOutcome::RateLimited;
+        }
+
         if ($item->status !== OrderItemStatus::Delivering
             && ! $this->stateMachine->tryTransition($item, OrderItemStatus::Delivering, reason: 'delivery_started')->changedAnything()) {
             return DeliveryOutcome::NotDeliverable;

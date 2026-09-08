@@ -35,6 +35,18 @@ final class Cfg
         return config()->integer('ops.reconciliation_max_age_seconds');
     }
 
+    /** Сколько обращений в минуту принимает поставщик; 0 — без лимита. */
+    public static function supplierRateLimit(): int
+    {
+        return config()->integer('suppliers.rate_limit_per_minute');
+    }
+
+    /** Окно подсчёта лимита поставщика в секундах. */
+    public static function supplierRateWindowSeconds(): int
+    {
+        return config()->integer('suppliers.rate_limit_window_seconds');
+    }
+
     /** Сколько система терпит позицию в тупике, прежде чем вернуть за неё деньги. */
     public static function refundAfterMinutes(): int
     {

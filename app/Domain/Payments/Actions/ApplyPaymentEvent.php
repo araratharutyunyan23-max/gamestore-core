@@ -9,6 +9,7 @@ use App\Domain\Ledger\Enums\LedgerDirection;
 use App\Domain\Ledger\Enums\LedgerTransactionKind;
 use App\Domain\Ledger\Repositories\LedgerRepository;
 use App\Domain\Ordering\Enums\OrderStatus;
+use App\Domain\Ordering\Repositories\OrderItemRepository;
 use App\Domain\Ordering\Repositories\OrderRepository;
 use App\Domain\Ordering\StateMachine\OrderStateMachine;
 use App\Domain\Payments\Enums\PaymentEventState;
@@ -48,6 +49,7 @@ final readonly class ApplyPaymentEvent
         private ConnectionInterface $db,
         private PaymentEventRepository $events,
         private OrderRepository $orders,
+        private OrderItemRepository $items,
         private OrderStateMachine $stateMachine,
         private LedgerRepository $ledger,
         private OrderPaymentStateRepository $paymentStates,
@@ -153,6 +155,14 @@ final readonly class ApplyPaymentEvent
         return $state;
     }
 
+    /**
+     * Приоритет оплаченного заказа в очереди выдачи.
+     *
+     * Число, а не флаг: под лимитом поставщика между оплаченными заказами
+     * тоже придётся выбирать, и шкала оставляет место для градаций.
+     */
+    private const PAID_PRIORITY = 100;
+
     private function applyPaid(PaymentEvent $event, Order $order): PaymentEventState
     {
         $transition = $this->stateMachine->tryTransition(
@@ -161,6 +171,17 @@ final readonly class ApplyPaymentEvent
             reason: 'payment_applied',
             traceId: StructuredLog::traceId(),
         );
+
+        if ($transition->changedAnything()) {
+            // Оплаченные обслуживаются раньше неоплаченных (ТЗ 3.3).
+            //
+            // Приоритет поднимается ровно здесь — в момент, когда оплата
+            // ПРИЗНАНА, а не когда ставится задача выдачи: приоритет это
+            // следствие оплаты, и вешать его на мостик диспетчеризации
+            // значит терять его на всех путях, которые идут мимо мостика —
+            // а таких путей три: доводка, подметальщик и очередь.
+            $this->items->raisePriorityForOrder($order->id, self::PAID_PRIORITY);
+        }
 
         if (! $transition->changedAnything()) {
             // Оплата поверх несостоявшегося платежа или отменённого заказа —

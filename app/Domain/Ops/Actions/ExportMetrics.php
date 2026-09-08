@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace App\Domain\Ops\Actions;
 
+use App\Domain\Delivery\Enums\SupplierName;
+use App\Domain\Delivery\RateLimit\SupplierRateLimiter;
 use App\Domain\Ledger\Repositories\LedgerRepository;
 use App\Domain\Ops\Repositories\OpsRepository;
+use App\Domain\Ordering\Repositories\OrderItemRepository;
 
 /**
  * Плоский текстовый экспортер в формате Prometheus.
@@ -20,6 +23,8 @@ final readonly class ExportMetrics
     public function __construct(
         private OpsRepository $ops,
         private LedgerRepository $ledger,
+        private OrderItemRepository $items,
+        private SupplierRateLimiter $rateLimiter,
     ) {}
 
     public function execute(): string
@@ -36,6 +41,21 @@ final readonly class ExportMetrics
         // это деньги, за которые мы ещё не выдали товар.
         $this->single($lines, 'gamestore_ledger_imbalance_minor', 'Расхождение двойной записи в копейках', $this->ledger->totalImbalanceMinor());
         $this->single($lines, 'gamestore_open_prepayment_minor', 'Незакрытая предоплата в копейках', $this->ledger->openPrepaymentMinor());
+
+        // Прогресс очереди по ТЗ 3.4: сколько ждёт обслуживания и сколько
+        // отложено до освобождения квоты поставщика. Без этих двух чисел
+        // «ничего не теряется» — утверждение, которое нечем подтвердить.
+        $queue = $this->items->queueDepth();
+        $this->gauge($lines, 'gamestore_delivery_queue', 'Очередь выдачи по состоянию', 'state', $queue);
+
+        foreach (SupplierName::cases() as $supplier) {
+            $this->single(
+                $lines,
+                'gamestore_supplier_quota_used_'.strtolower($supplier->value),
+                'Занято обращений в текущем окне лимита поставщика '.$supplier->value,
+                $this->rateLimiter->used($supplier),
+            );
+        }
 
         $age = $this->ops->lastReconciliationAgeSeconds();
         $this->single($lines, 'gamestore_reconciliation_age_seconds', 'Возраст последней сверки', $age ?? -1);

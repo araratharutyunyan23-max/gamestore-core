@@ -119,6 +119,7 @@ final readonly class DeliverOrder
             DeliveryOutcome::DeliveryFailed,
             DeliveryOutcome::SupplierExhausted,
             DeliveryOutcome::OutOfStock,
+            DeliveryOutcome::RateLimited,
             DeliveryOutcome::AlreadyInProgress,
             DeliveryOutcome::NotDeliverable,
         ];

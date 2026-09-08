@@ -29,6 +29,22 @@ return [
      */
     'allow_compensated_fallback' => (bool) env('SUPPLIER_ALLOW_COMPENSATED_FALLBACK', false),
 
+    /*
+     * Сколько обращений в минуту принимает поставщик.
+     *
+     * Ноль означает «без лимита». Ограничение общее на поставщика, а не на
+     * заказ: квоту выдаёт он, и делить её между нашими воркерами — наша
+     * забота, а не его.
+     */
+    'rate_limit_per_minute' => (int) env('SUPPLIER_RATE_LIMIT_PER_MINUTE', 0),
+
+    /*
+     * Окно, в котором считается лимит. Секунды, а не «минута» константой:
+     * тест обязан уметь сжать окно, иначе проверка лимита стоит минуту
+     * реального времени и её перестанут гонять.
+     */
+    'rate_limit_window_seconds' => (int) env('SUPPLIER_RATE_LIMIT_WINDOW_SECONDS', 60),
+
     'a' => ['url' => env('SUPPLIER_A_URL', 'http://supplier-a:8080')],
     'b' => ['url' => env('SUPPLIER_B_URL', 'http://supplier-b:8080')],
 ];

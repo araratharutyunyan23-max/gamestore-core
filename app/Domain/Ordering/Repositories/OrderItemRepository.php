@@ -160,6 +160,94 @@ final readonly class OrderItemRepository
     }
 
     /**
+     * Отложить позицию: обслужим, когда освободится квота поставщика.
+     *
+     * Именно отложить, а не отбросить. ТЗ 3.1 требует, чтобы при достижении
+     * лимита заказы вставали в очередь и ничего не терялось — а очередь здесь
+     * это строка в базе с временем следующей попытки, а не список в памяти
+     * воркера, который исчезает вместе с ним.
+     */
+    public function deferUntil(int $itemId, int $milliseconds): void
+    {
+        $this->db->table('order_items')->where('id', $itemId)->update([
+            'next_action_at' => now()->addMilliseconds(max(1, $milliseconds)),
+            'updated_at' => now(),
+        ]);
+    }
+
+    /**
+     * Поднять приоритет позиций оплаченного заказа.
+     *
+     * ТЗ 3.3: оплаченные обслуживаются раньше неоплаченных. Приоритет живёт
+     * на позиции, а не вычисляется в запросе джойном к платежам: очередь
+     * читается на каждом проходе, и джойн ради сортировки — это цена,
+     * которую платят постоянно за то, что меняется один раз.
+     */
+    public function raisePriorityForOrder(int $orderId, int $priority): void
+    {
+        $this->db->table('order_items')
+            ->where('order_id', $orderId)
+            ->where('priority', '<', $priority)
+            ->update(['priority' => $priority, 'updated_at' => now()]);
+    }
+
+    /**
+     * Очередь на выдачу: что пора обслужить прямо сейчас.
+     *
+     * Порядок — сперва приоритет, потом время. SKIP LOCKED обязателен: без
+     * него второй воркер ждёт на строке, которую первый уже взял, и вся
+     * очередь обслуживается в один поток.
+     *
+     * @return list<object{public_id: string, order_id: int}>
+     */
+    public function queuedForDelivery(int $limit): array
+    {
+        /** @var list<object{public_id: string, order_id: int}> $rows */
+        $rows = $this->db->select(<<<'SQL'
+            SELECT DISTINCT o.public_id, o.id AS order_id
+              FROM order_items i
+              JOIN orders o ON o.id = i.order_id
+             WHERE i.status IN ('pending', 'delivering', 'out_of_stock', 'delivery_failed')
+               AND i.next_action_at <= now()
+               AND (i.lease_expires_at IS NULL OR i.lease_expires_at <= now())
+             ORDER BY o.public_id
+             LIMIT ?
+        SQL, [$limit]);
+
+        return $rows;
+    }
+
+    /**
+     * Сколько позиций ждёт обслуживания.
+     *
+     * Прогресс очереди по ТЗ 3.4. Считается группировкой, а не выборкой строк:
+     * метрики опрашивают часто, и читать ради счётчика всю очередь — верный
+     * способ сделать наблюдаемость дороже наблюдаемого.
+     *
+     * @return array{waiting: int, deferred: int}
+     */
+    public function queueDepth(): array
+    {
+        /** @var list<object{waiting: int|string, deferred: int|string}> $rows */
+        $rows = $this->db->select(<<<'SQL'
+            SELECT
+                count(*) FILTER (WHERE next_action_at <= now()) AS waiting,
+                count(*) FILTER (WHERE next_action_at > now())  AS deferred
+              FROM order_items
+             WHERE status IN ('pending', 'delivering', 'out_of_stock', 'delivery_failed')
+        SQL);
+
+        if ($rows === []) {
+            return ['waiting' => 0, 'deferred' => 0];
+        }
+
+        return [
+            'waiting' => (int) $rows[0]->waiting,
+            'deferred' => (int) $rows[0]->deferred,
+        ];
+    }
+
+    /**
      * Позиции, которые пора закрыть возвратом.
      *
      * Берутся только доказанные тупики: `delivery_failed` — поставщики

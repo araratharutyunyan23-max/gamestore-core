@@ -35,5 +35,11 @@ enum DeliveryOutcome: string
     /** Оба поставщика доказанно не выдали код — восстановимый отказ. */
     case DeliveryFailed = 'delivery_failed';
 
+    /**
+     * Квота поставщика исчерпана. НЕ отказ: позиция остаётся в очереди и
+     * будет обслужена, когда окно освободится. Терять её нельзя (ТЗ 3.1).
+     */
+    case RateLimited = 'rate_limited';
+
     case NotDeliverable = 'not_deliverable';
 }
