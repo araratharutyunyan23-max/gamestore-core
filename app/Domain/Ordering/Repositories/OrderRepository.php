@@ -29,6 +29,14 @@ final readonly class OrderRepository
             ->first();
     }
 
+    public function findById(int $id): ?Order
+    {
+        return Order::query()
+            ->with(['product', 'paymentState', 'items.product', 'items.delivery'])
+            ->where('id', $id)
+            ->first();
+    }
+
     public function findByIdempotencyKey(string $key): ?Order
     {
         return Order::query()

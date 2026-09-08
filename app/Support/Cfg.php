@@ -35,6 +35,12 @@ final class Cfg
         return config()->integer('ops.reconciliation_max_age_seconds');
     }
 
+    /** Сколько система терпит позицию в тупике, прежде чем вернуть за неё деньги. */
+    public static function refundAfterMinutes(): int
+    {
+        return config()->integer('delivery.refund_after_minutes');
+    }
+
     /** Возраст неприменённого события, после которого его переставляет доводка. */
     public static function drainAfterSeconds(): int
     {

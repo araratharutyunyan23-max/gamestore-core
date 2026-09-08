@@ -11,6 +11,9 @@ enum LedgerTransactionKind: string
     case PaymentReversed = 'payment_reversed';
     case SupplierSurplus = 'supplier_surplus';
 
+    /** Возврат за невыданную позицию заказа. */
+    case ItemRefunded = 'item_refunded';
+
     /**
      * Ключ идемпотентности денежной операции.
      *

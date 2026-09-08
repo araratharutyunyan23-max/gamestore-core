@@ -218,6 +218,9 @@ parameters:
 | повторный вебхук ничего не меняет | `payment_events_event_id_uq` |
 | 50 вебхуков с **разными** `event_id` дают одну проводку | `payment_events_one_applied_paid_uq` |
 | каждый товар заказа выдаётся ровно один раз | `deliveries_order_item_uq` |
+| сумма позиций равна итогу заказа | `order_items_total_matches` (отложенный) |
+| **оплачено = выдано + возвращено** | `orders_settled_when_final` (отложенный) |
+| деньги за позицию не возвращаются дважды | `ledger_transactions_idempotency_uq` по `item_refunded:{заказ}#{строка}` |
 | один код не уйдёт в два заказа | `deliveries_code_hash_uq` |
 | ключ из пула не уйдёт в два заказа | `deliveries_license_key_uq`, `license_keys_delivery_uq` |
 | один код существует в пуле один раз | `license_keys_code_hash_uq` |

@@ -160,6 +160,33 @@ final readonly class OrderItemRepository
     }
 
     /**
+     * Позиции, которые пора закрыть возвратом.
+     *
+     * Берутся только доказанные тупики: `delivery_failed` — поставщики
+     * отказали, `out_of_stock` — склад не пополнился. Позиция в `delivering`
+     * сюда не попадает никогда, даже очень старая: там судьба обращения может
+     * быть НЕИЗВЕСТНА, и вернуть деньги за товар, который поставщик всё-таки
+     * выдал, значит отдать и товар, и деньги.
+     *
+     * @return list<OrderItem>
+     */
+    public function readyForRefund(int $olderThanMinutes, int $limit): array
+    {
+        $items = OrderItem::query()
+            ->whereIn('status', [
+                OrderItemStatus::DeliveryFailed->value,
+                OrderItemStatus::OutOfStock->value,
+            ])
+            ->where('status_changed_at', '<', now()->subMinutes($olderThanMinutes))
+            ->orderBy('status_changed_at')
+            ->limit($limit)
+            ->get()
+            ->all();
+
+        return array_values($items);
+    }
+
+    /**
      * Позиции, застрявшие в ожидании выдачи.
      *
      * Выборка идёт по частичному индексу order_items_worklist_idx, который

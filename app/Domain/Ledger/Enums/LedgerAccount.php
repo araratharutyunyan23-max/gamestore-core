@@ -31,11 +31,22 @@ enum LedgerAccount: string
     /** Расход: код у поставщика мог сгореть при неразрешённом таймауте. */
     case SupplierLeakage = 'supplier_leakage';
 
+    /**
+     * Обязательство: деньги за невыданный товар, которые ещё не отправлены.
+     *
+     * Возврат не уничтожает долг перед покупателем, а меняет его природу:
+     * мы больше не должны товар — мы должны деньги. Пока они не ушли, долг
+     * обязан быть виден. Списывать предоплату «в никуда» означало бы
+     * нарисовать себе прибыль из чужих денег.
+     */
+    case RefundsPayable = 'refunds_payable';
+
     public function kind(): LedgerAccountKind
     {
         return match ($this) {
             self::GatewayReceivable => LedgerAccountKind::Asset,
-            self::CustomerPrepayment, self::SuspenseUnapplied => LedgerAccountKind::Liability,
+            self::CustomerPrepayment, self::SuspenseUnapplied,
+            self::RefundsPayable => LedgerAccountKind::Liability,
             self::Revenue => LedgerAccountKind::Income,
             self::Cogs, self::SupplierLeakage => LedgerAccountKind::Expense,
         };

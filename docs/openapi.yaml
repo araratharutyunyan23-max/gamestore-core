@@ -511,9 +511,19 @@ components:
         - payment_failed
         - out_of_stock
         - delivery_failed
+        - partially_delivered
+        - refunded
         - cancelled
       description: |
         Основной путь: `created → paid → delivering → delivered`.
+
+        Конечные состояния многопозиционного заказа:
+        `partially_delivered` — часть товара выдана, за остальное деньги
+        возвращены; `refunded` — не выдано ничего, возвращено всё. Оба
+        КОНЕЧНЫЕ: заказ рассчитан, и возвращаться к нему незачем.
+
+        `delivery_failed`, наоборот, НЕ конечный: это «стоит и ждёт повтора».
+        Разница принципиальная — из него есть выход назад в выдачу.
 
         Финальные (необратимы, подкреплено триггером базы): `delivered`,
         `payment_failed`, `cancelled`.
